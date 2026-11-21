@@ -13,8 +13,9 @@ from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
 from ripper_queue import store as queue_store
+from ripper_queue.worker import QueueWorker
 from traktor.receiver import TraktorReceiver, configured_port
-from traktor.state import TraktorState
+from traktor.state import TraktorState, file_name_of
 from filenames import ytdlp_outtmpl
 import asyncio
 import json
@@ -22,6 +23,7 @@ from fastapi.responses import StreamingResponse
 
 import subprocess
 import sys
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -31,6 +33,7 @@ async def lifespan(app: FastAPI):
     init_db()
     restore_traktor_state()
     print("Event loop captured for SSE")
+    queue_worker.start()
     watcher = asyncio.create_task(devreload.watch_files()) if devreload.is_dev() else None
     dirty = asyncio.Event()
     pusher = asyncio.create_task(push_traktor_state(dirty))
@@ -46,6 +49,7 @@ async def lifespan(app: FastAPI):
     if watcher:
         watcher.cancel()
     pusher.cancel()
+    await queue_worker.stop()
     if receiver:
         await receiver.stop()
     save_traktor_state()
@@ -245,6 +249,90 @@ def download_song(query: str, download_dir: str, request_id: int = None):
         }
         notify(notification)
 
+class YtBackend:
+    """What the queue worker needs from YouTube: look a track up and download its audio."""
+
+    def lookup(self, item):
+        yt = get_ytmusic()
+        query = item["query"] or f"{item['artist']} {item['title']}"
+        results = yt.search(query, filter="songs") or yt.search(query)
+        if not results:
+            raise RuntimeError(f"No results found for: {query}")
+        match = next((r for r in results if item["video_id"] and r.get("videoId") == item["video_id"]), None)
+        if match is None and not item["video_id"]:
+            match = results[0]
+        video_id = item["video_id"] or (match or {}).get("videoId")
+        if not video_id:
+            raise RuntimeError(f"Could not find a video for: {query}")
+        thumbs = (match or {}).get("thumbnails") or []
+        return {"video_id": video_id, "album": ((match or {}).get("album") or {}).get("name"),
+                "thumbnail": thumbs[-1].get("url") if thumbs else None}
+
+    def download(self, video_id, dest_dir):
+        opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'}],
+            'outtmpl': f'{dest_dir}/audio.%(ext)s',
+            'quiet': True,
+            'no_warnings': True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([f"https://music.youtube.com/watch?v={video_id}"])
+        out = Path(dest_dir) / "audio.mp3"
+        if not out.is_file():
+            raise RuntimeError("the download produced no mp3 file")
+        return out
+
+
+async def on_queue_result(item_id, outcome):
+    """A queue item finished (ready / failed / removed): update its request and tell the pages."""
+    def finish():
+        conn = queue_store.open_db(db_file())
+        try:
+            item = queue_store.get_item(conn, item_id)
+            if item and item["request_id"] and outcome == "ready":
+                conn.execute("UPDATE requests SET status='downloaded' WHERE id=?", (item["request_id"],))
+                conn.commit()
+            return item
+        finally:
+            conn.close()
+
+    item = await run_in_threadpool(finish)
+    if item and outcome in ("ready", "failed"):
+        event = {"event": "download_complete" if outcome == "ready" else "download_failed",
+                 "query": f"{item['artist']} {item['title']}", "request_id": item["request_id"],
+                 "status": "success" if outcome == "ready" else "error"}
+        if outcome == "failed":
+            event["message"] = item["error"]
+        await broadcast(event)
+    await broadcast({"event": "queue_update", "id": item_id, "status": outcome})
+
+
+queue_worker = QueueWorker(db_file, queue_store.queue_dir, YtBackend(), on_queue_result)
+
+
+def add_queue_item(**fields):
+    """Add an item to tonight's session and wake the worker. Returns the item."""
+    fields.setdefault("query", f"{fields['artist']} {fields['title']}")
+    conn = queue_store.open_db(db_file())
+    try:
+        item, created = queue_store.add_item(conn, **fields)
+    finally:
+        conn.close()
+    if created:
+        queue_worker.wake_threadsafe()
+    return item
+
+
+def public_item(item):
+    """An item for the pages: never the full file path (it contains the user's folder names)."""
+    keep = ("id", "session_id", "position", "source", "request_id", "artist", "title", "video_id", "status",
+            "length_s", "bpm", "error", "added_at", "loaded_at", "played_at")
+    out = {k: item[k] for k in keep}
+    out["file_name"] = file_name_of(item["file_path"])
+    return out
+
+
 def reveal_folder(path: str):
     """Open a folder in the platform's file manager."""
     if sys.platform.startswith("win"):
@@ -314,7 +402,7 @@ def get_queue():
     return JSONResponse(rows)
 
 @app.post("/api/update_status")
-def update_status(background_tasks: BackgroundTasks, id: int = Form(...), status: str = Form(...)):
+def update_status(id: int = Form(...), status: str = Form(...)):
     conn = sqlite3.connect(db_file(), timeout=10)
     c = conn.cursor()
     c.execute("SELECT artist, song FROM requests WHERE id=?", (id,))
@@ -322,12 +410,28 @@ def update_status(background_tasks: BackgroundTasks, id: int = Form(...), status
     if row:
         c.execute("UPDATE requests SET status=? WHERE id=?", (status, id))
         conn.commit()
-        # If selected, trigger download
+        # Approving a request puts it in tonight's queue; the queue worker downloads it
         if status == 'selected':
-            query = f"{row[0]} {row[1]}"
-            background_tasks.add_task(download_song, query, QUEUE_DIR, id)
+            add_queue_item(source="request", request_id=id, artist=row[0], title=row[1])
     conn.close()
     return JSONResponse({"status": "success"})
+
+@app.get("/api/queue_items")
+def get_queue_items():
+    conn = queue_store.open_db(db_file())
+    try:
+        session = queue_store.current_session(conn)
+        return JSONResponse({
+            "session": session,
+            "items": [public_item(i) for i in queue_store.list_items(conn, session["id"])],
+            "folder": queue_store.folder_state(conn),
+        })
+    finally:
+        conn.close()
+
+@app.post("/api/queue_items/add")
+def add_queue_item_route(artist: str = Form(...), title: str = Form(...), video_id: str | None = Form(None)):
+    return JSONResponse(public_item(add_queue_item(source="dj", artist=artist, title=title, video_id=video_id or None)))
 
 @app.get("/api/traktor/state")
 async def get_traktor_state():
