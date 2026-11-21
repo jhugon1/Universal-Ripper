@@ -164,7 +164,7 @@
     el.root.hidden = empty && (id === 'C' || id === 'D');
     ['empty', 'paused', 'playing', 'stale'].forEach((c) => setClass(el.root, c, c === st));
     setText(el.state, st === 'playing' || st === 'stale' ? 'PLAYING' : st === 'paused' ? 'PAUSED' : '');
-    if (empty) return;
+    if (empty) { setText(el.note, ''); return; }
 
     setText(el.title, d.title || stem(d.file_name));
     setText(el.artist, d.artist || '');
