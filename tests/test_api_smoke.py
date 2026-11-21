@@ -82,6 +82,7 @@ def test_selected_triggers_download_and_event(client):
         c.post("/api/update_status", data={"id": rid, "status": "selected"})
 
         assert len(FakeYDL.downloads) == 1
+        assert FakeYDL.downloads[0][0].endswith("/Fake Artist - Fake Song.%(ext)s")
         assert FakeYDL.downloads[0][1] == ["https://music.youtube.com/watch?v=vid123"]
         assert c.get("/api/queue").json()[0]["status"] == "downloaded"
 

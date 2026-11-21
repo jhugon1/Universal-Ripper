@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from ytmusicapi import YTMusic
 import yt_dlp
+from filenames import ytdlp_outtmpl
 import asyncio
 import json
 from fastapi.responses import StreamingResponse
@@ -108,6 +109,8 @@ def download_song(query: str, download_dir: str, request_id: int = None):
             raise Exception(f"Could not find videoId for {query}")
             
         url = f"https://music.youtube.com/watch?v={video_id}"
+        match_title = best_match.get('title') or query
+        match_artist = ", ".join(a['name'] for a in best_match.get('artists') or [] if a.get('name'))
         
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -116,7 +119,7 @@ def download_song(query: str, download_dir: str, request_id: int = None):
                 'preferredcodec': 'mp3',
                 'preferredquality': '320',
             }],
-            'outtmpl': f'{download_dir}/%(title)s.%(ext)s',
+            'outtmpl': ytdlp_outtmpl(download_dir, match_artist, match_title),
             'quiet': False,
             'no_warnings': True
         }
