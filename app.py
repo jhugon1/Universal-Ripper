@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
+from traktor.receiver import TraktorReceiver, configured_port
+from traktor.state import TraktorState
 from filenames import ytdlp_outtmpl
 import asyncio
 import json
@@ -26,9 +28,22 @@ async def lifespan(app: FastAPI):
     init_db()
     print("Event loop captured for SSE")
     watcher = asyncio.create_task(devreload.watch_files()) if devreload.is_dev() else None
+    dirty = asyncio.Event()
+    pusher = asyncio.create_task(push_traktor_state(dirty))
+    receiver = None
+    port = configured_port()
+    if port:
+        # the receiver runs on this event loop, so on_change is called from the loop itself
+        receiver = TraktorReceiver(traktor_state, port, on_change=lambda changes: dirty.set())
+        receiver.start()
+    else:
+        print("Traktor receiver off (RIPPER_TRAKTOR_PORT=0)")
     yield
     if watcher:
         watcher.cancel()
+    pusher.cancel()
+    if receiver:
+        await receiver.stop()
     subscribers.clear()
 
 app = FastAPI(lifespan=lifespan)
@@ -73,10 +88,28 @@ subscribers = set()
 loop = None
 
 
+traktor_state = TraktorState()
+TRAKTOR_PUSH_INTERVAL = 0.25  # at most 4 traktor_state events per second
+
+
+def traktor_event():
+    return {"event": "traktor_state", "state": traktor_state.snapshot()}
+
+
+async def push_traktor_state(dirty: asyncio.Event):
+    """Coalesce state changes into SSE events, at most one per interval."""
+    while True:
+        await dirty.wait()
+        dirty.clear()
+        await broadcast(traktor_event())
+        await asyncio.sleep(TRAKTOR_PUSH_INTERVAL)
+
+
 async def broadcast(data):
     if not subscribers:
         return
-    print(f"Broadcasting event: {data}")
+    if data.get("event") != "traktor_state":
+        print(f"Broadcasting event: {data}")
     message = f"data: {json.dumps(data)}\n\n"
     for q in list(subscribers):
         await q.put(message)
@@ -244,12 +277,17 @@ def update_status(background_tasks: BackgroundTasks, id: int = Form(...), status
     conn.close()
     return JSONResponse({"status": "success"})
 
+@app.get("/api/traktor/state")
+async def get_traktor_state():
+    return JSONResponse(traktor_state.snapshot())
+
 @app.get("/api/events")
 async def events(request: Request):
     async def event_generator():
         q = asyncio.Queue()
         subscribers.add(q)
         try:
+            yield f"data: {json.dumps(traktor_event())}\n\n"  # current state for a new client
             while True:
                 if await request.is_disconnected():
                     break
