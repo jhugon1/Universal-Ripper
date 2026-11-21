@@ -14,7 +14,7 @@ from pathlib import Path
 
 from starlette.concurrency import run_in_threadpool
 
-from . import files, store
+from . import files, nml, store
 
 MAX_ATTEMPTS = 2        # one retry
 CONCURRENCY = 2
@@ -113,10 +113,14 @@ class QueueWorker:
         finally:
             conn.close()
 
-    def _retry_markers(self):
+    def _periodic(self):
+        """Retry file names that were busy, and pick up analyzed BPMs from Traktor's collection (read-only)."""
         conn = store.open_db(self.db_path())
         try:
-            return files.sync_markers(conn, self.root())
+            files.sync_markers(conn, self.root())
+            collection = nml.collection_path()
+            if collection:
+                nml.fill_bpm(conn, nml.bpm_index(collection))
         finally:
             conn.close()
 
@@ -137,9 +141,9 @@ class QueueWorker:
             if time.monotonic() - last_markers >= MARKER_RETRY_EVERY:
                 last_markers = time.monotonic()
                 try:
-                    await run_in_threadpool(self._retry_markers)
+                    await run_in_threadpool(self._periodic)
                 except Exception as exc:
-                    print(f"Queue: could not retry file order markers: {clean_error(exc)}")
+                    print(f"Queue: periodic maintenance failed: {clean_error(exc)}")
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=IDLE_POLL)
             except asyncio.TimeoutError:
