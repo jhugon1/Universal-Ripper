@@ -256,6 +256,10 @@ def reveal_folder(path: str):
 async def guest_view(request: Request):
     return templates.TemplateResponse(request=request, name="guest.html")
 
+@app.get("/booth", response_class=HTMLResponse)
+async def booth_view(request: Request):
+    return templates.TemplateResponse(request=request, name="booth.html")
+
 @app.get("/dj", response_class=HTMLResponse)
 async def dj_dashboard(request: Request):
     return templates.TemplateResponse(request=request, name="dj.html")
