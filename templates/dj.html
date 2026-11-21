@@ -351,7 +351,6 @@
         <div class="panel" id="leftPanel">
             <div class="header-flex">
                 <h2>Universal Search</h2>
-                <button class="btn-secondary" onclick="openFolder('search')" title="Where quick rips (Rip) are saved">Open Rip Folder</button>
             </div>
             <form class="search-bar" id="searchForm">
                 <input type="text" id="searchQuery" placeholder="Search YouTube Music..." required>
@@ -427,8 +426,6 @@
         }
 
         // ---- Universal Search ----
-        const ripCards = {};   // rip query -> {btn, state}, so download events can update that card
-
         function artistsOf(result) {
             const names = (result.artists || []).map(a => a.name).filter(Boolean);
             return names.length ? names.join(', ') : 'Unknown Artist';
@@ -446,11 +443,8 @@
             const state = el('span', 'si-state');
             const addBtn = el('button', 'btn-queue', 'Add to queue');
             addBtn.title = "Download it into tonight's queue folder, tagged, in order";
-            const ripBtn = el('button', 'btn-secondary', 'Rip');
-            ripBtn.title = 'Quick rip into the search folder, without adding it to the queue';
             addBtn.addEventListener('click', () => addToQueue(result, artist, title, addBtn, state));
-            ripBtn.addEventListener('click', () => ripSong(`${title} ${artist}`, ripBtn, state));
-            actions.append(state, addBtn, ripBtn);
+            actions.append(state, addBtn);
             card.append(main, actions);
             resultsDiv.appendChild(card);
         }
@@ -500,24 +494,6 @@
                 resultsDiv.textContent = 'Error searching.';
             }
         });
-
-        async function ripSong(query, btn, state) {
-            const formData = new FormData();
-            formData.append('query', query);
-            if (btn && state) {
-                btn.disabled = true;
-                ripCards[query] = { btn, state };
-                setState(state, 'Ripping...');
-            }
-            try {
-                showToast(`Downloading: ${query}`, 'info', `query-${query}`);
-                await fetch(`${API_BASE_URL}/api/download_direct`, { method: 'POST', body: formData });
-            } catch (error) {
-                console.error('Error starting download:', error);
-                showToast('Failed to start download.', 'error', `query-${query}`);
-                if (btn && state) { btn.disabled = false; setState(state, 'Failed - try again', 'err'); }
-            }
-        }
 
         // ---- Tonight's queue ----
         const MOVABLE = ['queued', 'downloading', 'ready'];
@@ -757,16 +733,12 @@
                 if (data.event === "download_complete") {
                     const key = data.request_id ? `req-${data.request_id}` : `query-${data.query}`;
                     updateToast(key, `Finished: ${data.query}`, 'success');
-                    const rip = ripCards[data.query];
-                    if (rip) { setState(rip.state, 'Ripped', 'ok'); rip.btn.disabled = false; delete ripCards[data.query]; }
                     // Refresh the lists
                     fetchQueue();
                     fetchQueueItems();
                 } else if (data.event === "download_failed") {
                     const key = data.request_id ? `req-${data.request_id}` : `query-${data.query}`;
                     updateToast(key, `Failed: ${data.query}`, 'error');
-                    const rip = ripCards[data.query];
-                    if (rip) { setState(rip.state, 'Failed - try again', 'err'); rip.btn.disabled = false; delete ripCards[data.query]; }
                     fetchQueueItems();
                 } else if (data.event === "queue_update") {
                     fetchQueueItems();

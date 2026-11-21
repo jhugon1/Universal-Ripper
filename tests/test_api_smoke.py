@@ -71,7 +71,6 @@ def client(tmp_path, monkeypatch, tone):
     monkeypatch.setattr(app_module, "get_ytmusic", lambda: FakeYT())
     monkeypatch.setattr(app_module.yt_dlp, "YoutubeDL", FakeYDL)
     monkeypatch.setattr(queue_files, "fetch_cover", lambda url: (JPEG, "image/jpeg"))
-    monkeypatch.setattr(app_module, "SEARCH_DIR", str(tmp_path / "search"))
     FakeYDL.downloads.clear()
     FakeYDL.tone, FakeYDL.fail_times, FakeYDL.gate = tone, 0, None
     # `with` runs the lifespan: sets app.loop, creates the schema, starts the queue worker.
@@ -355,3 +354,18 @@ def test_printing_a_non_latin_title_cannot_break_the_app(monkeypatch):
     app_module.make_console_safe()
     print("Broadcasting event:", {"query": "日本語 🎧"})
     assert b"Broadcasting event:" in raw.getvalue()
+
+
+def test_download_direct_adds_to_tonights_queue_and_never_to_a_search_folder(client, tmp_path):
+    c, app_module = client
+    legacy = ROOT / "DJ_Search_Rips"
+    before = sorted(p.name for p in legacy.iterdir()) if legacy.exists() else None
+    answer = c.post("/api/download_direct", data={"query": "fake song fake artist"}).json()
+    assert answer["status"] == "downloading" and answer["queued"] is True
+    item = first_item_with(c, "ready")
+    assert (item["artist"], item["title"]) == ("Fake Artist", "Fake Song")  # taken from the best match
+    assert item["file_name"] == "001 Fake Artist - Fake Song.mp3" and item["source"] == "dj"
+    session = c.get("/api/queue_items").json()["session"]["name"]
+    assert (tmp_path / "Ripper Queue" / session / item["file_name"]).is_file()
+    assert (sorted(p.name for p in legacy.iterdir()) if legacy.exists() else None) == before  # nothing new there
+    assert not hasattr(app_module, "SEARCH_DIR") and not hasattr(app_module, "download_song")

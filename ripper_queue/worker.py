@@ -49,11 +49,15 @@ def _attempt(conn, item_id, root, backend):
     if not item or item["status"] != "downloading":
         return "removed"
     meta = backend.lookup(item)
+    # an item added from free text (download_direct) has no artist yet: take both from the best match
+    from_match = not item["artist"]
+    artist = (meta.get("artist") or "Unknown Artist") if from_match else item["artist"]
+    title = (meta.get("title") or item["title"]) if from_match else item["title"]
     tmp = Path(tempfile.mkdtemp(prefix="ripper_queue_"))
     try:
         audio = Path(backend.download(meta["video_id"], tmp))
         cover = files.fetch_cover(meta["thumbnail"]) if meta.get("thumbnail") else None
-        files.tag_file(audio, title=item["title"], artist=item["artist"], album=meta.get("album"), cover=cover)
+        files.tag_file(audio, title=title, artist=artist, album=meta.get("album"), cover=cover)
         length = files.read_length(audio)
 
         item = store.get_item(conn, item_id)  # the DJ may have removed it or moved it meanwhile
@@ -62,13 +66,13 @@ def _attempt(conn, item_id, root, backend):
         session = conn.execute("SELECT name FROM sessions WHERE id = ?", (item["session_id"],)).fetchone()["name"]
         folder = Path(root) / session
         folder.mkdir(parents=True, exist_ok=True)
-        target = files.free_path(folder / files.item_filename(item["position"], item["artist"], item["title"]))
+        target = files.free_path(folder / files.item_filename(item["position"], artist, title))
         part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
         shutil.copyfile(audio, part)
         os.replace(part, target)
         conn.execute("UPDATE queue_items SET status = 'ready', file_path = ?, length_s = ?, marker_position = ?, "
-                     "error = NULL WHERE id = ? AND status = 'downloading'",
-                     (str(target), length, item["position"], item_id))
+                     "artist = ?, title = ?, error = NULL WHERE id = ? AND status = 'downloading'",
+                     (str(target), length, item["position"], artist, title, item_id))
         conn.commit()
         store.mark_folder_changed(conn)
         return "ready"

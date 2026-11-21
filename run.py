@@ -27,6 +27,32 @@ BOOTH_URL = f"http://localhost:{PORT}/booth"
 ROOT = Path(__file__).resolve().parent
 
 
+def current_branch(root=ROOT):
+    """Name of the checked-out git branch, or None (not a git checkout, or git is not installed)."""
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def queue_code_present(root=ROOT) -> bool:
+    return all((Path(root) / "ripper_queue" / name).is_file() for name in ("store.py", "worker.py", "files.py"))
+
+
+def checkout_report(root=ROOT) -> list:
+    """Lines to print at startup: the branch, and a warning if this checkout has no queue code
+    (then 'Add to queue' and the Tonight's Queue panel do not exist)."""
+    branch = current_branch(root)
+    lines = [f"Branch: {branch or 'unknown (not a git checkout?)'}"]
+    if not queue_code_present(root):
+        lines.append("WARNING: the queue code (ripper_queue/) is not in this checkout, so 'Add to queue' and the "
+                     f"Tonight's Queue panel will not work. You are on branch {branch or 'unknown'}; check out the "
+                     "branch that contains the queue (see `git branch --list`).")
+    return lines
+
+
 def dev_defaults(environ=None, root=ROOT) -> dict:
     """In dev mode use a separate database and queue folder, unless the caller set their own.
     Fake or experimental runs must never write into the real queue.db or the real Ripper Queue
@@ -116,6 +142,9 @@ def main(argv=None):
     ap.add_argument("--window", action="store_true", help="open /dj and /booth in chromeless Chrome/Edge windows")
     ap.add_argument("--no-booth", action="store_true", help="with --window: do not open the /booth window")
     args = ap.parse_args(argv)
+
+    for line in checkout_report():
+        print(line)
 
     if args.dev:
         if importlib.util.find_spec("watchfiles") is None:

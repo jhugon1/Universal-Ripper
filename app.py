@@ -2,7 +2,7 @@ import sqlite3
 import os
 import threading
 import time
-from fastapi import FastAPI, Request, Form, BackgroundTasks
+from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +18,6 @@ from ripper_queue import sync as queue_sync
 from ripper_queue.worker import QueueWorker
 from traktor.receiver import TraktorReceiver, configured_port
 from traktor.state import TraktorState, file_name_of
-from filenames import ytdlp_outtmpl
 import asyncio
 import json
 from fastapi.responses import StreamingResponse
@@ -104,8 +103,6 @@ def get_ytmusic() -> YTMusic:
     return yt
 
 
-SEARCH_DIR = "DJ_Search_Rips"
-QUEUE_DIR = "Guest_Queue_Rips"
 
 # SSE Notification System
 subscribers = set()
@@ -222,72 +219,6 @@ def notify(notification: dict):
     if loop is not None:
         asyncio.run_coroutine_threadsafe(broadcast(notification), loop)
 
-def download_song(query: str, download_dir: str, request_id: int = None):
-    try:
-        yt = get_ytmusic()
-        # Find official song
-        results = yt.search(query, filter="songs")
-        if not results:
-            results = yt.search(query)
-        
-        if not results:
-            raise Exception(f"No results found for: {query}")
-
-        best_match = results[0]
-        video_id = best_match.get('videoId')
-        if not video_id:
-            raise Exception(f"Could not find videoId for {query}")
-            
-        url = f"https://music.youtube.com/watch?v={video_id}"
-        match_title = best_match.get('title') or query
-        match_artist = ", ".join(a['name'] for a in best_match.get('artists') or [] if a.get('name'))
-        
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '320',
-            }],
-            'outtmpl': ytdlp_outtmpl(download_dir, match_artist, match_title),
-            'quiet': False,
-            'no_warnings': True
-        }
-        
-        os.makedirs(download_dir, exist_ok=True)
-        print(f"Starting download: {query}")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        print(f"Successfully downloaded: {query}")
-        
-        # Update database if this was a queue request
-        if request_id:
-            conn = sqlite3.connect(db_file(), timeout=10)
-            c = conn.cursor()
-            c.execute("UPDATE requests SET status='downloaded' WHERE id=?", (request_id,))
-            conn.commit()
-            conn.close()
-
-        # Notify clients
-        notification = {
-            "event": "download_complete",
-            "query": query,
-            "request_id": request_id,
-            "status": "success"
-        }
-        notify(notification)
-
-    except Exception as e:
-        print(f"Error downloading {query}: {e}")
-        notification = {
-            "event": "download_failed",
-            "query": query,
-            "request_id": request_id,
-            "status": "error",
-            "message": str(e)
-        }
-        notify(notification)
-
 class YtBackend:
     """What the queue worker needs from YouTube: look a track up and download its audio."""
 
@@ -304,8 +235,10 @@ class YtBackend:
         if not video_id:
             raise RuntimeError(f"Could not find a video for: {query}")
         thumbs = (match or {}).get("thumbnails") or []
+        names = [a.get("name") for a in ((match or {}).get("artists") or []) if a.get("name")]
         return {"video_id": video_id, "album": ((match or {}).get("album") or {}).get("name"),
-                "thumbnail": thumbs[-1].get("url") if thumbs else None}
+                "thumbnail": thumbs[-1].get("url") if thumbs else None,
+                "artist": ", ".join(names) or None, "title": (match or {}).get("title")}
 
     def download(self, video_id, dest_dir):
         opts = {
@@ -575,14 +508,16 @@ def universal_search(query: str = Form(...)):
     return JSONResponse(results[:8])
 
 @app.post("/api/download_direct")
-def download_direct(background_tasks: BackgroundTasks, query: str = Form(...)):
-    background_tasks.add_task(download_song, query, SEARCH_DIR)
-    return JSONResponse({"status": "downloading"})
+def download_direct(query: str = Form(...)):
+    """Kept for compatibility. Nothing is ripped into a separate folder any more: this adds the track to
+    tonight's queue (artist and title are taken from the best match when the download runs)."""
+    item = add_queue_item(source="dj", artist="", title=query, query=query)
+    return JSONResponse({"status": "downloading", "queued": True, "id": item["id"]})
 
 @app.post("/api/open_folder")
 def open_folder(folder_type: str = Form(...)):
     try:
-        target = SEARCH_DIR if folder_type == "search" else str(queue_store.queue_dir())
+        target = str(queue_store.queue_dir())  # one folder for everything: Ripper Queue (folder_type is kept for compatibility)
         os.makedirs(target, exist_ok=True)
         reveal_folder(target)
         return JSONResponse({"status": "success"})

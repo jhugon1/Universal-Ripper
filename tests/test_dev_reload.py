@@ -111,3 +111,16 @@ def test_window_mode_opens_the_control_page_and_the_booth():
     assert run.window_urls(True) == [run.DJ_URL, run.BOOTH_URL]
     assert run.window_urls(True, no_booth=True) == [run.DJ_URL]
     assert run.window_urls(False, no_booth=True) == [run.DJ_URL]
+
+
+def test_startup_names_the_branch_and_warns_when_the_queue_code_is_missing(tmp_path):
+    lines = run.checkout_report(tmp_path)  # not a git checkout, and no queue code
+    assert lines[0].startswith("Branch: unknown") and "WARNING" in lines[1] and "ripper_queue" in lines[1]
+    package = tmp_path / "ripper_queue"
+    package.mkdir()
+    for name in ("store.py", "worker.py", "files.py"):
+        (package / name).write_text("")
+    assert run.queue_code_present(tmp_path) and len(run.checkout_report(tmp_path)) == 1
+    (package / "worker.py").unlink()
+    assert not run.queue_code_present(tmp_path)  # a half-present package counts as missing
+    assert run.current_branch(Path(run.ROOT)) not in (None, "")  # this checkout is a git repo
