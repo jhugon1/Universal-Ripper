@@ -2,6 +2,7 @@
 import asyncio
 import json
 import shutil
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -287,3 +288,53 @@ def test_new_night_starts_a_new_folder_and_numbering(client, tmp_path):
     assert sorted(p.name for p in root.iterdir()) == [first, first + "-2"]
     assert [p.name for p in (root / first).iterdir()] == ["001 A - Song A.mp3"]  # last night's file is untouched
     assert [p.name for p in (root / (first + "-2")).iterdir()] == ["001 B - Song B.mp3"]
+
+
+# ---- Traktor events reach the queue ------------------------------------------------------------
+@pytest.fixture
+def traktor_port(monkeypatch):
+    """Turn the app's Traktor receiver on, on a free port. Request this fixture BEFORE `client`."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("RIPPER_TRAKTOR_PORT", str(port))
+    return port
+
+
+def test_traktor_events_move_an_item_through_loaded_to_played(traktor_port, client, tmp_path):
+    import httpx
+
+    c, app_module = client
+    http = httpx.Client(trust_env=False, timeout=2)
+    base = f"http://127.0.0.1:{traktor_port}"
+    post(c, "add", artist="A", title="Song A")
+    post(c, "add", artist="B", title="Song B")
+    wait_for(lambda: len(items_of(c)) == 2 and all(i["status"] == "ready" for i in items_of(c)))
+    assert c.get("/api/queue_items").json()["up_next"]["artist"] == "A"
+    conn = sqlite3.connect(tmp_path / "test.db")
+    path = conn.execute("SELECT file_path FROM queue_items WHERE artist = 'A'").fetchone()[0]
+    conn.close()
+
+    def send(kind, body):
+        for _ in range(50):  # the receiver starts in the background
+            try:
+                return http.post(f"{base}/{kind}", json=body)
+            except httpx.TransportError:
+                time.sleep(0.1)
+        raise AssertionError("receiver did not start")
+
+    def status_of(artist):
+        return next(i["status"] for i in items_of(c) if i["artist"] == artist)
+
+    send("deckLoaded/A", {"filePath": path.replace("\\", "/").upper(), "title": "x", "bpm": 126.4, "trackLength": 200.0})
+    wait_for(lambda: status_of("A") == "loaded")
+    state = c.get("/api/queue_items").json()
+    assert next(i for i in state["items"] if i["artist"] == "A")["bpm"] == 126.4
+    assert state["up_next"]["artist"] == "B"  # A is on a deck now
+
+    app_module.traktor_state.decks["A"]["audible_seconds"] = 31.0  # what 31 s of playing would have counted
+    send("updateDeck/A", {"isPlaying": True, "elapsedTime": 31.0})
+    wait_for(lambda: status_of("A") == "played")
+    send("deckLoaded/A", {"filePath": ""})  # ejected afterwards: still played
+    time.sleep(0.6)
+    assert status_of("A") == "played" and status_of("B") == "ready"

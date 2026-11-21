@@ -117,6 +117,13 @@ def add_item(conn, *, source, artist, title, query=None, video_id=None, request_
     return get_item(conn, cur.lastrowid), True
 
 
+def up_next(conn, session_id):
+    """The lowest-position item that is ready (downloaded, not yet loaded or played)."""
+    row = conn.execute("SELECT * FROM queue_items WHERE session_id = ? AND status = 'ready' "
+                       "ORDER BY position, id LIMIT 1", (session_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def update_item(conn, item_id, **fields):
     if not fields:
         return

@@ -14,6 +14,7 @@ import yt_dlp
 import devreload
 from ripper_queue import files as queue_files
 from ripper_queue import store as queue_store
+from ripper_queue import sync as queue_sync
 from ripper_queue.worker import QueueWorker
 from traktor.receiver import TraktorReceiver, configured_port
 from traktor.state import TraktorState, file_name_of
@@ -106,6 +107,18 @@ def traktor_event():
     return {"event": "traktor_state", "state": traktor_state.snapshot()}
 
 
+def sync_queue_with_traktor(decks, now):
+    """Loaded / played / BPM updates for queue items, from what the decks report."""
+    conn = queue_store.open_db(db_file())
+    try:
+        return queue_sync.apply_sync(conn, decks, now)
+    except Exception as exc:  # never let the queue break the live feed
+        print(f"Queue sync failed: {exc}")
+        return []
+    finally:
+        conn.close()
+
+
 TRAKTOR_SAVE_INTERVAL = 2.0   # persist the state at most this often
 TRAKTOR_RESTORE_MAX_AGE = 12 * 3600  # a snapshot older than this is not restored after a restart
 
@@ -147,6 +160,9 @@ async def push_traktor_state(dirty: asyncio.Event):
             dirty.clear()
             await broadcast(traktor_event())
             unsaved = True
+            decks = {k: dict(v) for k, v in traktor_state.decks.items()}  # copied here, on the loop thread
+            if await run_in_threadpool(sync_queue_with_traktor, decks, time.time()):
+                await broadcast({"event": "queue_update", "status": "traktor"})
             await asyncio.sleep(TRAKTOR_PUSH_INTERVAL)
         except asyncio.TimeoutError:
             pass
@@ -420,10 +436,12 @@ def update_status(id: int = Form(...), status: str = Form(...)):
 def queue_state(conn):
     """Tonight's session, its items in order, and whether Traktor needs the folder re-selected."""
     session = queue_store.current_session(conn)
+    nxt = queue_store.up_next(conn, session["id"])
     return {
         "session": session,
         "items": [public_item(i) for i in queue_store.list_items(conn, session["id"])],
         "folder": queue_store.folder_state(conn),
+        "up_next": public_item(nxt) if nxt else None,
     }
 
 

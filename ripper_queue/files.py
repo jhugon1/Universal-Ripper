@@ -9,7 +9,7 @@ Rules (Traktor records the paths of loaded tracks in its collection, so files mu
 import os
 import re
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from mutagen import File as MutagenFile
 from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TIT2, TPE1
@@ -33,6 +33,11 @@ def marker_name(position: int, name: str) -> str:
 
 def item_filename(position: int, artist: str, title: str) -> str:
     return marker_name(position, f"{track_basename(artist, title)}.mp3")
+
+
+def normalize_path(path) -> str:
+    """A comparable form of a file path: case-insensitive, one slash style (Traktor reports Windows paths)."""
+    return str(PureWindowsPath(path)).casefold() if path else ""
 
 
 def is_inside(path, root) -> bool:
