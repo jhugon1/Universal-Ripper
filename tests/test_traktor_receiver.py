@@ -192,3 +192,21 @@ def test_new_sse_client_gets_current_state_first(app_env):
 
     msg = json.loads(asyncio.run(first_message()).removeprefix("data: "))
     assert msg["event"] == "traktor_state" and msg["state"]["decks"]["A"]["title"] == "Song"
+
+
+def test_receiver_root_says_which_database_the_app_uses():
+    c = TestClient(create_receiver(TraktorState(), info=lambda: {"database": {"real": True, "name": "queue.db"}}))
+    body = c.get("/").json()
+    assert body["app"] == "ripper-traktor-receiver" and body["database"] == {"real": True, "name": "queue.db"}
+    assert "database" not in TestClient(create_receiver(TraktorState())).get("/").json()
+    assert c.post("/").status_code == 405  # still POST-only for events
+
+
+def test_the_app_knows_whether_it_is_on_the_real_database(app_env, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RIPPER_DB", raising=False)
+    assert app_env.db_is_real() is True and app_env.receiver_info()["database"] == {"real": True, "name": "queue.db"}
+    monkeypatch.setenv("RIPPER_DB", str(tmp_path / "queue.dev.db"))
+    assert app_env.db_is_real() is False and app_env.receiver_info()["database"]["name"] == "queue.dev.db"
+    monkeypatch.setenv("RIPPER_DB", "queue.db")  # the same file by another spelling is still the real one
+    assert app_env.db_is_real() is True

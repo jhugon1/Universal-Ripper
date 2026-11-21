@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     port = configured_port()
     if port:
         # the receiver runs on this event loop, so on_change is called from the loop itself
-        receiver = TraktorReceiver(traktor_state, port, on_change=lambda changes: dirty.set())
+        receiver = TraktorReceiver(traktor_state, port, on_change=lambda changes: dirty.set(), info=receiver_info)
         receiver.start()
     else:
         print("Traktor receiver off (RIPPER_TRAKTOR_PORT=0)")
@@ -105,6 +105,15 @@ TRAKTOR_PUSH_INTERVAL = 0.25  # at most 4 traktor_state events per second
 
 def traktor_event():
     return {"event": "traktor_state", "state": traktor_state.snapshot()}
+
+
+def db_is_real() -> bool:
+    """True when the app uses the default queue.db, the user's real data."""
+    return Path(db_file()).resolve() == Path("queue.db").resolve()
+
+
+def receiver_info():
+    return {"database": {"real": db_is_real(), "name": Path(db_file()).name}}
 
 
 def sync_queue_with_traktor(decks, now):
@@ -503,6 +512,17 @@ def new_night():
 def queue_folder_refreshed():
     """The DJ re-selected Ripper Queue in Traktor: clear the hint."""
     return queue_action(lambda conn: queue_store.ack_folder(conn))
+
+@app.post("/api/traktor/reset")
+async def reset_traktor_state():
+    """Forget the deck state (and the copy saved in the database), e.g. after a test run left fake decks."""
+    traktor_state.reset()
+    decks = {k: dict(v) for k, v in traktor_state.decks.items()}
+    await run_in_threadpool(save_traktor_state)
+    await run_in_threadpool(sync_queue_with_traktor, decks, time.time())  # items no longer on a deck go back to ready
+    await broadcast(traktor_event())
+    await broadcast({"event": "queue_update", "status": "traktor"})
+    return JSONResponse({"status": "success"})
 
 @app.get("/api/traktor/state")
 async def get_traktor_state():

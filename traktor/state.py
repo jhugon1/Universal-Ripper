@@ -82,6 +82,10 @@ class TraktorState:
         self.last_played = None
         self._last_tick = None
 
+    def reset(self):
+        """Forget everything: decks, channels, master clock and counters (the object itself stays)."""
+        self.__init__(clock=self._clock)
+
     # ---- derived -------------------------------------------------------------------------
     def is_audible(self, deck_id):
         d = self.decks[deck_id]

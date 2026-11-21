@@ -209,6 +209,29 @@ def make_poster(base_url, timeout=2.0):
     return post
 
 
+def check_target(base_url, allow_real_db=False, timeout=2.5):
+    """Ask the receiver which database its app uses. Refuses (exits) if it is the real one."""
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/", timeout=timeout) as resp:
+            info = json.loads(resp.read().decode("utf-8", "replace"))
+        db = info.get("database") or {}
+    except (OSError, ValueError, AttributeError):
+        print(f"note: could not check which database {base_url} uses (not running yet, or an older server)", file=sys.stderr)
+        return
+    if not db:
+        print(f"note: {base_url} did not say which database it uses; make sure it is a dev instance", file=sys.stderr)
+        return
+    if db.get("real"):
+        banner = "!" * 72
+        if not allow_real_db:
+            sys.exit(f"{banner}\nREFUSING to send fake events: {base_url} is using the REAL database ({db.get('name')}).\n"
+                     "Fake decks would be saved into it and come back after every restart.\n"
+                     "Start the app with `python run.py --dev` (it uses a separate dev database),\n"
+                     f"or pass --allow-real-db if you really mean it.\n{banner}")
+        print(f"{banner}\nWARNING: sending fake events to the REAL database ({db.get('name')}). Use 'Reset decks' afterwards.\n{banner}",
+              file=sys.stderr)
+
+
 def run_events(events, post, speed=1.0, sleep=time.sleep, verbose=False):
     """Send events with their delays divided by speed. Returns the number sent."""
     sent = 0
@@ -228,10 +251,12 @@ def main(argv=None):
     common.add_argument("--speed", type=float, default=argparse.SUPPRESS, help="timeline speed factor (default 1)")
     common.add_argument("--loop", action="store_true", default=argparse.SUPPRESS, help="repeat until Ctrl-C")
     common.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS, help="print every event")
+    common.add_argument("--allow-real-db", action="store_true", default=argparse.SUPPRESS,
+                        help="send even if the app uses the real database (not recommended)")
     ap = argparse.ArgumentParser(description=__doc__, parents=[common], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), help="named scenario to play")
     ap.add_argument("--list", action="store_true", help="list scenarios")
-    ap.set_defaults(url=DEFAULT_URL, speed=1.0, loop=False, verbose=False)  # SUPPRESS above keeps flags given before "replay"
+    ap.set_defaults(url=DEFAULT_URL, speed=1.0, loop=False, verbose=False, allow_real_db=False)  # SUPPRESS above keeps flags given before "replay"
     sub = ap.add_subparsers(dest="cmd")
     rp = sub.add_parser("replay", parents=[common], help="replay a .jsonl capture or a folder of samples")
     rp.add_argument("source")
@@ -253,6 +278,7 @@ def main(argv=None):
     else:
         ap.error("pass --scenario NAME, replay SOURCE, or --list")
 
+    check_target(args.url, args.allow_real_db)
     post = make_poster(args.url)
     print(f"{label} -> {args.url} (speed x{args.speed:g}{', looping' if args.loop else ''}); Ctrl-C to stop", flush=True)
     try:

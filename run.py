@@ -25,6 +25,21 @@ BOOTH_URL = f"http://localhost:{PORT}/booth"
 ROOT = Path(__file__).resolve().parent
 
 
+def dev_defaults(environ=None, root=ROOT) -> dict:
+    """In dev mode use a separate database and queue folder, unless the caller set their own.
+    Fake or experimental runs must never write into the real queue.db or the real Ripper Queue
+    folder that Traktor browses. Returns what was set."""
+    environ = os.environ if environ is None else environ
+    dev_dir = Path(root) / "dev_data"
+    chosen = {}
+    for name, value in (("RIPPER_DB", dev_dir / "queue.dev.db"), ("RIPPER_QUEUE_DIR", dev_dir / "Ripper Queue")):
+        if not environ.get(name):
+            environ[name] = chosen[name] = str(value)
+    if chosen:
+        dev_dir.mkdir(parents=True, exist_ok=True)
+    return chosen
+
+
 def uvicorn_kwargs(dev: bool) -> dict:
     kwargs = {"host": "0.0.0.0", "port": PORT}
     if dev:
@@ -97,6 +112,8 @@ def main(argv=None):
             sys.exit("--dev needs watchfiles: pip install -r requirements-dev.txt")
         os.environ["RIPPER_DEV"] = "1"  # inherited by the reloaded server process
         print("Dev mode: server reloads on .py changes; browser reloads on template/static changes.")
+        for name, value in dev_defaults().items():
+            print(f"Dev mode: {name} = {value} (separate from your real data)")
 
     ngrok = None
     if shutil.which("ngrok"):

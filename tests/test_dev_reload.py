@@ -87,3 +87,20 @@ def test_uvicorn_kwargs():
     dev = run.uvicorn_kwargs(True)
     assert dev["reload"] is True and "*.py" in dev["reload_includes"]
     assert Path(dev["reload_dirs"][0]) == Path(run.ROOT)
+
+
+def test_dev_mode_never_defaults_to_the_real_database(tmp_path):
+    env = {}
+    chosen = run.dev_defaults(env, root=tmp_path)
+    assert set(chosen) == {"RIPPER_DB", "RIPPER_QUEUE_DIR"}
+    assert Path(env["RIPPER_DB"]) == tmp_path / "dev_data" / "queue.dev.db" and Path(env["RIPPER_DB"]).name != "queue.db"
+    assert Path(env["RIPPER_QUEUE_DIR"]) == tmp_path / "dev_data" / "Ripper Queue"
+    assert (tmp_path / "dev_data").is_dir()
+
+
+def test_dev_defaults_respect_what_the_caller_set(tmp_path):
+    env = {"RIPPER_DB": "mine.db"}
+    assert set(run.dev_defaults(env, root=tmp_path)) == {"RIPPER_QUEUE_DIR"}
+    assert env["RIPPER_DB"] == "mine.db"
+    full = {"RIPPER_DB": "a.db", "RIPPER_QUEUE_DIR": "q"}
+    assert run.dev_defaults(full, root=tmp_path / "other") == {} and not (tmp_path / "other" / "dev_data").exists()

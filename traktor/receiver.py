@@ -31,9 +31,14 @@ def configured_port(environ=None) -> int:
     return port if 0 <= port <= 65535 else DEFAULT_PORT
 
 
-def create_receiver(state, on_change=None) -> FastAPI:
+def create_receiver(state, on_change=None, info=None) -> FastAPI:
     """ASGI app: POST /{kind} and /{kind}/{arg}. Always answers {} quickly, whatever the body."""
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/")
+    async def about():
+        """Lets tools such as fake_traktor check what they are about to feed before posting."""
+        return JSONResponse({"app": "ripper-traktor-receiver", **(info() if info else {})})
 
     @app.post("/{kind}")
     @app.post("/{kind}/{arg}")
@@ -72,8 +77,8 @@ def _bind(host, port):
 class TraktorReceiver:
     """Runs the receiver as a second uvicorn server inside the running event loop."""
 
-    def __init__(self, state, port, on_change=None, host="127.0.0.1", retry_seconds=3.0):
-        self.state, self.port, self.on_change = state, port, on_change
+    def __init__(self, state, port, on_change=None, host="127.0.0.1", retry_seconds=3.0, info=None):
+        self.state, self.port, self.on_change, self.info = state, port, on_change, info
         self.host, self.retry_seconds = host, retry_seconds
         self.bound = False
         self._server = None
@@ -97,7 +102,7 @@ class TraktorReceiver:
                           "running without Traktor input")
                     return
                 await asyncio.sleep(0.2)
-        config = uvicorn.Config(create_receiver(self.state, self.on_change), log_config=None,
+        config = uvicorn.Config(create_receiver(self.state, self.on_change, self.info), log_config=None,
                                 log_level="warning", access_log=False, lifespan="off")
         self._server = uvicorn.Server(config)
         self._server.install_signal_handlers = lambda: None  # the main server owns signals
