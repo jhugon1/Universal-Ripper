@@ -104,3 +104,10 @@ def test_dev_defaults_respect_what_the_caller_set(tmp_path):
     assert env["RIPPER_DB"] == "mine.db"
     full = {"RIPPER_DB": "a.db", "RIPPER_QUEUE_DIR": "q"}
     assert run.dev_defaults(full, root=tmp_path / "other") == {} and not (tmp_path / "other" / "dev_data").exists()
+
+
+def test_window_mode_opens_the_control_page_and_the_booth():
+    assert run.window_urls(False) == [run.DJ_URL]
+    assert run.window_urls(True) == [run.DJ_URL, run.BOOTH_URL]
+    assert run.window_urls(True, no_booth=True) == [run.DJ_URL]
+    assert run.window_urls(False, no_booth=True) == [run.DJ_URL]

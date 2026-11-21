@@ -3,7 +3,9 @@
   python run.py          normal start
   python run.py --dev    reload the server when .py files change and reload open browser tabs
                          when the server restarts or a template/static file changes
-  python run.py --window open the booth display (/booth) in a chromeless Chrome/Edge app window
+  python run.py --window open /dj (the control page) and /booth (the display) in two chromeless
+                         Chrome/Edge app windows; drag the booth window to the booth screen
+  python run.py --window --no-booth    only the /dj window
 """
 import argparse
 import importlib.util
@@ -81,30 +83,38 @@ def window_command(url, exe=None):
     return [exe, f"--app={url}", "--window-size=1280,800"] if exe else None
 
 
+def window_urls(window: bool, no_booth: bool = False) -> list:
+    """Pages to open at start: /dj alone, or with --window also the /booth display."""
+    return [DJ_URL] + ([BOOTH_URL] if window and not no_booth else [])
+
+
 def open_url(url, window=False):
     cmd = window_command(url) if window else None
     if cmd:
         subprocess.Popen(cmd)
         return
     if window:
-        print("Chrome/Edge not found; opening the booth in your default browser instead.")
+        print("Chrome/Edge not found; opening it in your default browser instead.")
     webbrowser.open(url)
 
 
-def _open_when_ready(url, window=False):
+def _open_when_ready(urls, window=False):
     for _ in range(100):
         try:
             with socket.create_connection(("127.0.0.1", PORT), timeout=0.2):
                 break
         except OSError:
             time.sleep(0.1)
-    open_url(url, window)
+    for url in urls:
+        open_url(url, window)
+        time.sleep(0.4)  # let the first window appear before the second
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dev", action="store_true", help="auto-reload server and browser (development only)")
-    ap.add_argument("--window", action="store_true", help="open /booth in a chromeless Chrome/Edge window")
+    ap.add_argument("--window", action="store_true", help="open /dj and /booth in chromeless Chrome/Edge windows")
+    ap.add_argument("--no-booth", action="store_true", help="with --window: do not open the /booth window")
     args = ap.parse_args(argv)
 
     if args.dev:
@@ -126,7 +136,7 @@ def main(argv=None):
     else:
         print("ngrok not found on PATH; running locally only.")
 
-    threading.Thread(target=_open_when_ready, args=(BOOTH_URL if args.window else DJ_URL, args.window), daemon=True).start()
+    threading.Thread(target=_open_when_ready, args=(window_urls(args.window, args.no_booth), args.window), daemon=True).start()
     try:
         uvicorn.run("app:app", **uvicorn_kwargs(args.dev))
     finally:
