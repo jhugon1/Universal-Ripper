@@ -1,10 +1,12 @@
 import sqlite3
 import os
 import threading
+import time
 from fastapi import FastAPI, Request, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from ytmusicapi import YTMusic
@@ -26,6 +28,7 @@ async def lifespan(app: FastAPI):
     global loop
     loop = asyncio.get_running_loop()
     init_db()
+    restore_traktor_state()
     print("Event loop captured for SSE")
     watcher = asyncio.create_task(devreload.watch_files()) if devreload.is_dev() else None
     dirty = asyncio.Event()
@@ -44,6 +47,7 @@ async def lifespan(app: FastAPI):
     pusher.cancel()
     if receiver:
         await receiver.stop()
+    save_traktor_state()
     subscribers.clear()
 
 app = FastAPI(lifespan=lifespan)
@@ -96,13 +100,53 @@ def traktor_event():
     return {"event": "traktor_state", "state": traktor_state.snapshot()}
 
 
+TRAKTOR_SAVE_INTERVAL = 2.0   # persist the state at most this often
+TRAKTOR_RESTORE_MAX_AGE = 12 * 3600  # a snapshot older than this is not restored after a restart
+
+
+def save_traktor_state():
+    """Write the state (including file paths) to the local DB so a restart can recover it."""
+    try:
+        data = json.dumps(traktor_state.dump())
+        conn = sqlite3.connect(db_file(), timeout=10)
+        conn.execute("INSERT OR REPLACE INTO traktor_state (id, saved_at, data) VALUES (1, ?, ?)",
+                     (time.time(), data))
+        conn.commit()
+        conn.close()
+    except Exception as exc:  # persistence must never break the live feed
+        print(f"Could not save Traktor state: {exc}")
+
+
+def restore_traktor_state():
+    """Reload the last saved state, marked restored, unless it is too old or unreadable."""
+    try:
+        conn = sqlite3.connect(db_file(), timeout=10)
+        row = conn.execute("SELECT saved_at, data FROM traktor_state WHERE id = 1").fetchone()
+        conn.close()
+        if not row or time.time() - row[0] > TRAKTOR_RESTORE_MAX_AGE:
+            return
+        traktor_state.load(json.loads(row[1]))
+        loaded = sum(1 for d in traktor_state.decks.values() if d["restored"])
+        print(f"Restored Traktor state: {loaded} deck(s) loaded")
+    except Exception as exc:
+        print(f"Could not restore Traktor state: {exc}")
+
+
 async def push_traktor_state(dirty: asyncio.Event):
-    """Coalesce state changes into SSE events, at most one per interval."""
+    """Coalesce state changes into SSE events (at most one per interval) and persist them."""
+    last_saved, unsaved = 0.0, False
     while True:
-        await dirty.wait()
-        dirty.clear()
-        await broadcast(traktor_event())
-        await asyncio.sleep(TRAKTOR_PUSH_INTERVAL)
+        try:
+            await asyncio.wait_for(dirty.wait(), timeout=1.0)
+            dirty.clear()
+            await broadcast(traktor_event())
+            unsaved = True
+            await asyncio.sleep(TRAKTOR_PUSH_INTERVAL)
+        except asyncio.TimeoutError:
+            pass
+        if unsaved and time.monotonic() - last_saved >= TRAKTOR_SAVE_INTERVAL:
+            await run_in_threadpool(save_traktor_state)
+            last_saved, unsaved = time.monotonic(), False
 
 
 async def broadcast(data):
@@ -123,6 +167,8 @@ def init_db():
                   song TEXT, 
                   status TEXT DEFAULT 'pending', 
                   timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS traktor_state
+                 (id INTEGER PRIMARY KEY CHECK (id = 1), saved_at REAL, data TEXT)''')
     conn.commit()
     conn.close()
 
