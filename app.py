@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from ytmusicapi import YTMusic
 import yt_dlp
+import devreload
 from filenames import ytdlp_outtmpl
 import asyncio
 import json
@@ -24,10 +25,15 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     init_db()
     print("Event loop captured for SSE")
+    watcher = asyncio.create_task(devreload.watch_files()) if devreload.is_dev() else None
     yield
+    if watcher:
+        watcher.cancel()
     subscribers.clear()
 
 app = FastAPI(lifespan=lifespan)
+if devreload.is_dev():
+    devreload.install(app)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
