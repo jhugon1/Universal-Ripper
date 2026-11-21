@@ -43,7 +43,7 @@ def _empty_deck():
     return {
         "file_path": None, "title": None, "artist": None, "bpm": None, "tempo": 1.0, "key": None,
         "track_length": None, "elapsed": 0.0, "elapsed_at": None, "is_playing": False,
-        "loaded_at": None, "started_at": None, "audible_seconds": 0.0, "raw": {},
+        "loaded_at": None, "started_at": None, "audible_seconds": 0.0, "playing_seconds": 0.0, "raw": {},
         "updated_at": None, "restored": False,
     }
 
@@ -112,8 +112,11 @@ class TraktorState:
         if self.last_event_at is None or now - self.last_event_at > CREDIT_GAP:
             return
         for deck_id in DECK_IDS:
+            d = self.decks[deck_id]
+            if d["file_path"] and d["is_playing"]:
+                d["playing_seconds"] += now - last  # playing, whether or not the fader is up
             if self.is_audible(deck_id):
-                self.decks[deck_id]["audible_seconds"] += now - last
+                d["audible_seconds"] += now - last
 
     # ---- applying events -----------------------------------------------------------------
     def apply(self, path, body, now=None):
@@ -175,6 +178,7 @@ class TraktorState:
         if new_path != d["file_path"]:  # a different track: start its bookkeeping from zero
             self._set(d, "deck", deck_id, "loaded_at", now, changes)
             self._set(d, "deck", deck_id, "audible_seconds", 0.0, changes)
+            self._set(d, "deck", deck_id, "playing_seconds", 0.0, changes)
             self._set(d, "deck", deck_id, "started_at", None, changes)
             self._set(d, "deck", deck_id, "is_playing", False, changes)
         self._apply_deck_fields(deck_id, body, now, changes)
@@ -275,7 +279,7 @@ class TraktorState:
                     continue
                 else:
                     value = _num(value)
-                    if value is None and field in ("tempo", "elapsed", "audible_seconds"):
+                    if value is None and field in ("tempo", "elapsed", "audible_seconds", "playing_seconds"):
                         value = blank[field]
                 d[field] = value
             d["restored"] = bool(d["file_path"])
