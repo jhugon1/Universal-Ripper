@@ -1,0 +1,7 @@
+{
+  "path": "/updateMasterClock",
+  "body": {
+    "deck": null,
+    "bpm": 120
+  }
+}

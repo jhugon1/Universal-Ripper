@@ -1,0 +1,6 @@
+{
+  "path": "/updateChannel/1",
+  "body": {
+    "onAirLevel": 1
+  }
+}
