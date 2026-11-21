@@ -338,3 +338,20 @@ def test_traktor_events_move_an_item_through_loaded_to_played(traktor_port, clie
     send("deckLoaded/A", {"filePath": ""})  # ejected afterwards: still played
     time.sleep(0.6)
     assert status_of("A") == "played" and status_of("B") == "ready"
+
+
+def test_printing_a_non_latin_title_cannot_break_the_app(monkeypatch):
+    import io
+    import sys
+
+    import app as app_module
+
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1252", write_through=True)  # a typical Windows console
+    monkeypatch.setattr(sys, "stdout", console)
+    monkeypatch.setattr(sys, "stderr", console)
+    with pytest.raises(UnicodeEncodeError):
+        print("日本語")  # without the fix this is what happened inside broadcast()
+    app_module.make_console_safe()
+    print("Broadcasting event:", {"query": "日本語 🎧"})
+    assert b"Broadcasting event:" in raw.getvalue()

@@ -65,6 +65,11 @@
   #next .facts small { color: var(--muted); font-size: .5em; font-weight: 500; letter-spacing: .08em; margin-left: .3em; }
   #next.none .who .ntitle { color: var(--muted); font-weight: 500; }
   #next.none .facts { display: none; }
+  #tools { text-align: right; min-height: 0; }
+  #resetDecks { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px;
+                padding: 4px 12px; font: inherit; font-size: 14px; cursor: pointer; }
+  #resetDecks:hover { color: var(--text); border-color: var(--muted); }
+  #resetDecks[hidden] { display: none; }
 
   /* three or four decks loaded: smaller type so everything, including Up Next, still fits */
   #decks.many { gap: 12px; }
@@ -90,6 +95,7 @@
     <div class="who"><div class="ntitle">Queue empty</div><div class="nartist"></div></div>
     <div class="facts num"><span><span id="nbpm">&mdash;</span><small>BPM</small></span><span><span id="nlen">&mdash;</span><small>LENGTH</small></span></div>
   </footer>
+  <div id="tools"><button id="resetDecks" hidden title="Forget the deck state shown here">Reset decks</button></div>
 
 <script>
 (function () {
@@ -181,6 +187,8 @@
       const now = serverNow();
       DECKS.forEach((id) => renderDeck(id, now));
       setClass($('#decks'), 'many', DECKS.filter((id) => !els[id].root.hidden).length > 2);
+      // offer a reset only when something lingers: a restored deck, or one whose signal went quiet
+      $('#resetDecks').hidden = !DECKS.some((id) => snap.decks[id].restored || status(snap.decks[id], now) === 'stale');
     }
     requestAnimationFrame(frame);
   }
@@ -222,6 +230,9 @@
   }
 
   build();
+  $('#resetDecks').addEventListener('click', () => fetch('/api/traktor/reset', { method: 'POST' }).then(() => {
+    fetch('/api/traktor/state').then((r) => r.json()).then(take).catch(() => {});
+  }).catch(() => {}));
   fetch('/api/traktor/state').then((r) => r.json()).then((s) => { if (!snap) take(s); }).catch(() => {});
   connect();
   fetchQueue();

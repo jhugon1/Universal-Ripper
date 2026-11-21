@@ -28,6 +28,19 @@ import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+def make_console_safe():
+    """Windows consoles often use cp1252: printing a track title with other characters (Japanese, emoji)
+    would raise UnicodeEncodeError and break a download or an event. Replace what cannot be shown."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:  # not a real text stream (for example under a test runner)
+            pass
+
+
+make_console_safe()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global loop
@@ -347,6 +360,7 @@ def add_queue_item(**fields):
         conn.close()
     if created:
         queue_worker.wake_threadsafe()
+        notify({"event": "queue_update", "status": "added"})
     return item
 
 
@@ -454,13 +468,16 @@ def queue_state(conn):
     }
 
 
-def queue_action(action):
-    """Run action(conn) against the queue DB and answer with the fresh queue state."""
+def queue_action(action, changed=False):
+    """Run action(conn) against the queue DB and answer with the fresh queue state.
+    changed=True tells the open pages to refresh."""
     conn = queue_store.open_db(db_file())
     try:
         error = action(conn)
         if error:
             return JSONResponse({"status": "error", "message": error}, status_code=404)
+        if changed:
+            notify({"event": "queue_update", "status": "changed"})
         return JSONResponse(queue_state(conn))
     finally:
         conn.close()
@@ -481,7 +498,7 @@ def move_queue_item(id: int = Form(...), direction: str = Form(...)):
             return "no such item"
         if queue_store.move_item(conn, id, direction):  # swaps with the neighbouring queued/ready item
             queue_files.sync_markers(conn, queue_store.queue_dir())  # busy files are retried by the worker
-    return queue_action(act)
+    return queue_action(act, changed=True)
 
 @app.post("/api/queue_items/remove")
 def remove_queue_item(id: int = Form(...)):
@@ -491,7 +508,7 @@ def remove_queue_item(id: int = Form(...)):
             return "no such item"
         if item["status"] != "removed":  # the file, if any, stays where it is: Traktor may have it loaded
             queue_store.update_item(conn, id, status="removed")
-    return queue_action(act)
+    return queue_action(act, changed=True)
 
 @app.post("/api/queue_items/retry")
 def retry_queue_item(id: int = Form(...)):
@@ -502,16 +519,16 @@ def retry_queue_item(id: int = Form(...)):
         if item["status"] == "failed":
             queue_store.update_item(conn, id, status="queued", error=None)
             queue_worker.wake_threadsafe()
-    return queue_action(act)
+    return queue_action(act, changed=True)
 
 @app.post("/api/queue_items/new_night")
 def new_night():
-    return queue_action(lambda conn: queue_store.new_night(conn) and None)
+    return queue_action(lambda conn: queue_store.new_night(conn) and None, changed=True)
 
 @app.post("/api/queue_items/refreshed")
 def queue_folder_refreshed():
     """The DJ re-selected Ripper Queue in Traktor: clear the hint."""
-    return queue_action(lambda conn: queue_store.ack_folder(conn))
+    return queue_action(lambda conn: queue_store.ack_folder(conn), changed=True)
 
 @app.post("/api/traktor/reset")
 async def reset_traktor_state():
@@ -552,8 +569,10 @@ async def events(request: Request):
 @app.post("/api/search")
 def universal_search(query: str = Form(...)):
     yt = get_ytmusic()
-    results = yt.search(query, filter="songs", limit=5)
-    return JSONResponse(results)
+    results = yt.search(query, filter="songs", limit=8)
+    if not results:
+        results = yt.search(query, limit=8)
+    return JSONResponse(results[:8])
 
 @app.post("/api/download_direct")
 def download_direct(background_tasks: BackgroundTasks, query: str = Form(...)):
@@ -563,7 +582,7 @@ def download_direct(background_tasks: BackgroundTasks, query: str = Form(...)):
 @app.post("/api/open_folder")
 def open_folder(folder_type: str = Form(...)):
     try:
-        target = SEARCH_DIR if folder_type == "search" else QUEUE_DIR
+        target = SEARCH_DIR if folder_type == "search" else str(queue_store.queue_dir())
         os.makedirs(target, exist_ok=True)
         reveal_folder(target)
         return JSONResponse({"status": "success"})
