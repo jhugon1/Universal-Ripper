@@ -42,3 +42,6 @@ Guest_Queue_Rips/
 scratch/
 .deps_installed
 .envrc
+
+# raw Traktor captures (contain local paths)
+fixtures/traktor/session_*.jsonl
