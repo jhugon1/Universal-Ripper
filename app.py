@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
+from ripper_queue import files as queue_files
 from ripper_queue import store as queue_store
 from ripper_queue.worker import QueueWorker
 from traktor.receiver import TraktorReceiver, configured_port
@@ -416,22 +417,74 @@ def update_status(id: int = Form(...), status: str = Form(...)):
     conn.close()
     return JSONResponse({"status": "success"})
 
-@app.get("/api/queue_items")
-def get_queue_items():
+def queue_state(conn):
+    """Tonight's session, its items in order, and whether Traktor needs the folder re-selected."""
+    session = queue_store.current_session(conn)
+    return {
+        "session": session,
+        "items": [public_item(i) for i in queue_store.list_items(conn, session["id"])],
+        "folder": queue_store.folder_state(conn),
+    }
+
+
+def queue_action(action):
+    """Run action(conn) against the queue DB and answer with the fresh queue state."""
     conn = queue_store.open_db(db_file())
     try:
-        session = queue_store.current_session(conn)
-        return JSONResponse({
-            "session": session,
-            "items": [public_item(i) for i in queue_store.list_items(conn, session["id"])],
-            "folder": queue_store.folder_state(conn),
-        })
+        error = action(conn)
+        if error:
+            return JSONResponse({"status": "error", "message": error}, status_code=404)
+        return JSONResponse(queue_state(conn))
     finally:
         conn.close()
+
+
+@app.get("/api/queue_items")
+def get_queue_items():
+    return queue_action(lambda conn: None)
 
 @app.post("/api/queue_items/add")
 def add_queue_item_route(artist: str = Form(...), title: str = Form(...), video_id: str | None = Form(None)):
     return JSONResponse(public_item(add_queue_item(source="dj", artist=artist, title=title, video_id=video_id or None)))
+
+@app.post("/api/queue_items/move")
+def move_queue_item(id: int = Form(...), direction: str = Form(...)):
+    def act(conn):
+        if not queue_store.get_item(conn, id):
+            return "no such item"
+        if queue_store.move_item(conn, id, direction):  # swaps with the neighbouring queued/ready item
+            queue_files.sync_markers(conn, queue_store.queue_dir())  # busy files are retried by the worker
+    return queue_action(act)
+
+@app.post("/api/queue_items/remove")
+def remove_queue_item(id: int = Form(...)):
+    def act(conn):
+        item = queue_store.get_item(conn, id)
+        if not item:
+            return "no such item"
+        if item["status"] != "removed":  # the file, if any, stays where it is: Traktor may have it loaded
+            queue_store.update_item(conn, id, status="removed")
+    return queue_action(act)
+
+@app.post("/api/queue_items/retry")
+def retry_queue_item(id: int = Form(...)):
+    def act(conn):
+        item = queue_store.get_item(conn, id)
+        if not item:
+            return "no such item"
+        if item["status"] == "failed":
+            queue_store.update_item(conn, id, status="queued", error=None)
+            queue_worker.wake_threadsafe()
+    return queue_action(act)
+
+@app.post("/api/queue_items/new_night")
+def new_night():
+    return queue_action(lambda conn: queue_store.new_night(conn) and None)
+
+@app.post("/api/queue_items/refreshed")
+def queue_folder_refreshed():
+    """The DJ re-selected Ripper Queue in Traktor: clear the hint."""
+    return queue_action(lambda conn: queue_store.ack_folder(conn))
 
 @app.get("/api/traktor/state")
 async def get_traktor_state():

@@ -2,7 +2,9 @@
 import asyncio
 import json
 import shutil
+import sqlite3
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -25,6 +27,7 @@ class FakeYDL:
     downloads = []
     tone = None        # a real 1 s mp3 that the "download" copies into place
     fail_times = 0     # make the next N download attempts fail
+    gate = None        # a threading.Event: downloads wait for it (to test removing an item mid-download)
 
     def __init__(self, opts):
         self.opts = opts
@@ -37,6 +40,8 @@ class FakeYDL:
 
     def download(self, urls):
         FakeYDL.downloads.append((self.opts.get("outtmpl"), list(urls)))
+        if FakeYDL.gate is not None:
+            FakeYDL.gate.wait(10)
         if FakeYDL.fail_times > 0:
             FakeYDL.fail_times -= 1
             raise RuntimeError("simulated network error")
@@ -67,7 +72,7 @@ def client(tmp_path, monkeypatch, tone):
     monkeypatch.setattr(queue_files, "fetch_cover", lambda url: (JPEG, "image/jpeg"))
     monkeypatch.setattr(app_module, "SEARCH_DIR", str(tmp_path / "search"))
     FakeYDL.downloads.clear()
-    FakeYDL.tone, FakeYDL.fail_times = tone, 0
+    FakeYDL.tone, FakeYDL.fail_times, FakeYDL.gate = tone, 0, None
     # `with` runs the lifespan: sets app.loop, creates the schema, starts the queue worker.
     with TestClient(app_module.app) as c:
         yield c, app_module
@@ -179,3 +184,106 @@ def test_two_failures_end_as_failed_with_a_short_message(client, tmp_path):
     assert len(FakeYDL.downloads) == 2 and "simulated network error" in item["error"]
     assert str(Path.home()) not in item["error"] and item["file_name"] is None
     assert not (tmp_path / "Ripper Queue").exists() or not any((tmp_path / "Ripper Queue").rglob("*.mp3"))
+
+
+# ---- reorder, remove, retry, new night ---------------------------------------------------------
+def post(c, path, **data):
+    return c.post(f"/api/queue_items/{path}", data=data).json()
+
+
+def add_ready(c, *names):
+    for n in names:
+        post(c, "add", artist=n, title=f"Song {n}")
+    wait_for(lambda: len(items_of(c)) == len(names) and all(i["status"] == "ready" for i in items_of(c)))
+    return items_of(c)
+
+
+def folder_names(c, tmp_path):
+    session = c.get("/api/queue_items").json()["session"]["name"]
+    return sorted(p.name for p in (tmp_path / "Ripper Queue" / session).iterdir())
+
+
+def set_status_in_db(tmp_path, item_id, status):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    conn.execute("UPDATE queue_items SET status = ? WHERE id = ?", (status, item_id))
+    conn.commit()
+    conn.close()
+
+
+def test_reordering_renames_the_files_and_flags_the_folder(client, tmp_path):
+    c, _ = client
+    a, b, d = add_ready(c, "A", "B", "D")
+    post(c, "refreshed")
+    assert c.get("/api/queue_items").json()["folder"]["reselect_needed"] is False
+
+    state = post(c, "move", id=d["id"], direction="up")
+    assert [i["artist"] for i in state["items"]] == ["A", "D", "B"]
+    assert folder_names(c, tmp_path) == ["001 A - Song A.mp3", "002 D - Song D.mp3", "003 B - Song B.mp3"]
+    assert state["folder"]["reselect_needed"] is True
+
+    top = post(c, "move", id=a["id"], direction="up")  # already first: nothing changes
+    assert [i["artist"] for i in top["items"]] == ["A", "D", "B"]
+    assert post(c, "move", id=b["id"], direction="sideways")["items"] == top["items"]
+    assert c.post("/api/queue_items/move", data={"id": 999, "direction": "up"}).status_code == 404
+
+
+def test_loaded_and_played_items_keep_their_place_and_their_file_name(client, tmp_path):
+    c, _ = client
+    a, b, d = add_ready(c, "A", "B", "D")
+    set_status_in_db(tmp_path, b["id"], "loaded")  # what the Traktor sync will do in 3a-ii
+    state = post(c, "move", id=d["id"], direction="up")  # B is locked, so D swaps with A
+    assert [(i["artist"], i["position"]) for i in state["items"]] == [("D", 1), ("B", 2), ("A", 3)]
+    assert folder_names(c, tmp_path) == ["001 D - Song D.mp3", "002 B - Song B.mp3", "003 A - Song A.mp3"]
+    assert next(i for i in state["items"] if i["artist"] == "B")["file_name"] == "002 B - Song B.mp3"
+    set_status_in_db(tmp_path, a["id"], "played")
+    assert post(c, "move", id=d["id"], direction="down")["items"][0]["artist"] == "D"  # nothing movable below it
+
+
+def test_remove_never_touches_the_file(client, tmp_path):
+    c, _ = client
+    a, b = add_ready(c, "A", "B")
+    before = folder_names(c, tmp_path)
+    state = post(c, "remove", id=a["id"])
+    assert [i["artist"] for i in state["items"]] == ["B"]
+    assert folder_names(c, tmp_path) == before  # the file is still there for Traktor
+    assert post(c, "remove", id=a["id"])["items"] == state["items"]  # removing twice is harmless
+    assert c.post("/api/queue_items/remove", data={"id": 999}).status_code == 404
+
+
+def test_removing_an_item_mid_download_leaves_no_file(client, tmp_path):
+    c, _ = client
+    FakeYDL.gate = threading.Event()
+    post(c, "add", artist="A", title="Song A")
+    wait_for(lambda: FakeYDL.downloads and first_item_with(c, "downloading"))
+    post(c, "remove", id=items_of(c)[0]["id"])
+    FakeYDL.gate.set()
+    time.sleep(1.0)  # let the worker finish and discard the download
+    root = tmp_path / "Ripper Queue"
+    assert not root.exists() or not any(root.rglob("*.mp3")) and not any(root.rglob("*.part"))
+    assert items_of(c) == []
+
+
+def test_retry_puts_a_failed_item_back_in_the_queue(client):
+    c, _ = client
+    FakeYDL.fail_times = 5
+    post(c, "add", artist="A", title="Song A")
+    failed = first_item_with(c, "failed")
+    FakeYDL.fail_times = 0
+    assert post(c, "retry", id=failed["id"])["items"][0]["status"] in ("queued", "downloading", "ready")
+    assert first_item_with(c, "ready")["error"] is None
+    assert post(c, "retry", id=failed["id"])["items"][0]["status"] == "ready"  # only failed items are retried
+    assert c.post("/api/queue_items/retry", data={"id": 999}).status_code == 404
+
+
+def test_new_night_starts_a_new_folder_and_numbering(client, tmp_path):
+    c, _ = client
+    add_ready(c, "A")
+    first = c.get("/api/queue_items").json()["session"]["name"]
+    assert post(c, "new_night")["session"]["name"] == first + "-2"  # same day: suffix
+    assert post(c, "new_night")["session"]["name"] == first + "-2"  # pressed again while still empty: no-op
+    second_items = add_ready(c, "B")
+    assert second_items[0]["position"] == 1 and [i["artist"] for i in items_of(c)] == ["B"]
+    root = tmp_path / "Ripper Queue"
+    assert sorted(p.name for p in root.iterdir()) == [first, first + "-2"]
+    assert [p.name for p in (root / first).iterdir()] == ["001 A - Song A.mp3"]  # last night's file is untouched
+    assert [p.name for p in (root / (first + "-2")).iterdir()] == ["001 B - Song B.mp3"]
