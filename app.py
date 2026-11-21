@@ -9,17 +9,20 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from ytmusicapi import YTMusic
 import yt_dlp
+from filenames import ytdlp_outtmpl
 import asyncio
 import json
 from fastapi.responses import StreamingResponse
 
 import subprocess
+import sys
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global loop
     loop = asyncio.get_running_loop()
+    init_db()
     print("Event loop captured for SSE")
     yield
     subscribers.clear()
@@ -37,7 +40,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 templates = Jinja2Templates(directory="templates")
-DB_FILE = "queue.db"
+
+
+def db_file() -> str:
+    """DB path, read on each use so tests can point RIPPER_DB at a temp file."""
+    return os.environ.get("RIPPER_DB", "queue.db")
+
+
+_thread_local = threading.local()
+
+
+def get_ytmusic() -> YTMusic:
+    """One YTMusic client per thread (it wraps a requests.Session, which is
+    not documented as thread-safe)."""
+    yt = getattr(_thread_local, "yt", None)
+    if yt is None:
+        yt = _thread_local.yt = YTMusic()
+    return yt
+
+
 SEARCH_DIR = "DJ_Search_Rips"
 QUEUE_DIR = "Guest_Queue_Rips"
 
@@ -55,7 +76,7 @@ async def broadcast(data):
         await q.put(message)
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn = sqlite3.connect(db_file(), timeout=10)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS requests
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -66,11 +87,14 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
+def notify(notification: dict):
+    """Push an SSE event from a worker thread onto the event loop."""
+    if loop is not None:
+        asyncio.run_coroutine_threadsafe(broadcast(notification), loop)
 
 def download_song(query: str, download_dir: str, request_id: int = None):
     try:
-        yt = YTMusic()
+        yt = get_ytmusic()
         # Find official song
         results = yt.search(query, filter="songs")
         if not results:
@@ -85,6 +109,8 @@ def download_song(query: str, download_dir: str, request_id: int = None):
             raise Exception(f"Could not find videoId for {query}")
             
         url = f"https://music.youtube.com/watch?v={video_id}"
+        match_title = best_match.get('title') or query
+        match_artist = ", ".join(a['name'] for a in best_match.get('artists') or [] if a.get('name'))
         
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -93,7 +119,7 @@ def download_song(query: str, download_dir: str, request_id: int = None):
                 'preferredcodec': 'mp3',
                 'preferredquality': '320',
             }],
-            'outtmpl': f'{download_dir}/%(title)s.%(ext)s',
+            'outtmpl': ytdlp_outtmpl(download_dir, match_artist, match_title),
             'quiet': False,
             'no_warnings': True
         }
@@ -106,7 +132,7 @@ def download_song(query: str, download_dir: str, request_id: int = None):
         
         # Update database if this was a queue request
         if request_id:
-            conn = sqlite3.connect(DB_FILE, timeout=10)
+            conn = sqlite3.connect(db_file(), timeout=10)
             c = conn.cursor()
             c.execute("UPDATE requests SET status='downloaded' WHERE id=?", (request_id,))
             conn.commit()
@@ -119,7 +145,7 @@ def download_song(query: str, download_dir: str, request_id: int = None):
             "request_id": request_id,
             "status": "success"
         }
-        asyncio.run_coroutine_threadsafe(broadcast(notification), loop)
+        notify(notification)
 
     except Exception as e:
         print(f"Error downloading {query}: {e}")
@@ -130,7 +156,16 @@ def download_song(query: str, download_dir: str, request_id: int = None):
             "status": "error",
             "message": str(e)
         }
-        asyncio.run_coroutine_threadsafe(broadcast(notification), loop)
+        notify(notification)
+
+def reveal_folder(path: str):
+    """Open a folder in the platform's file manager."""
+    if sys.platform.startswith("win"):
+        os.startfile(os.path.abspath(path))  # noqa: S606 (Windows only)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", path], check=False)
+    else:
+        subprocess.run(["xdg-open", path], check=False)
 
 @app.get("/", response_class=HTMLResponse)
 async def guest_view(request: Request):
@@ -141,9 +176,9 @@ async def dj_dashboard(request: Request):
     return templates.TemplateResponse(request=request, name="dj.html")
 
 @app.post("/api/request")
-async def submit_request(artist: str = Form(...), song: str = Form(...)):
+def submit_request(artist: str = Form(...), song: str = Form(...)):
     query = f"{artist} {song}"
-    yt = YTMusic()
+    yt = get_ytmusic()
     # Search for songs first
     results = yt.search(query, filter="songs", limit=1)
     
@@ -166,7 +201,7 @@ async def submit_request(artist: str = Form(...), song: str = Form(...)):
             if artists and isinstance(artists, list):
                 final_artist = artists[0].get('name', artist)
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(db_file(), timeout=10)
     c = conn.cursor()
     c.execute("INSERT INTO requests (artist, song, status) VALUES (?, ?, 'pending')", (final_artist, final_song))
     conn.commit()
@@ -178,8 +213,8 @@ async def submit_request(artist: str = Form(...), song: str = Form(...)):
     })
 
 @app.get("/api/queue")
-async def get_queue():
-    conn = sqlite3.connect(DB_FILE, timeout=10)
+def get_queue():
+    conn = sqlite3.connect(db_file(), timeout=10)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM requests ORDER BY timestamp DESC")
@@ -188,8 +223,8 @@ async def get_queue():
     return JSONResponse(rows)
 
 @app.post("/api/update_status")
-async def update_status(id: int = Form(...), status: str = Form(...), background_tasks: BackgroundTasks = BackgroundTasks()):
-    conn = sqlite3.connect(DB_FILE, timeout=10)
+def update_status(background_tasks: BackgroundTasks, id: int = Form(...), status: str = Form(...)):
+    conn = sqlite3.connect(db_file(), timeout=10)
     c = conn.cursor()
     c.execute("SELECT artist, song FROM requests WHERE id=?", (id,))
     row = c.fetchone()
@@ -224,30 +259,30 @@ async def events(request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.post("/api/search")
-async def universal_search(query: str = Form(...)):
-    yt = YTMusic()
+def universal_search(query: str = Form(...)):
+    yt = get_ytmusic()
     results = yt.search(query, filter="songs", limit=5)
     return JSONResponse(results)
 
 @app.post("/api/download_direct")
-async def download_direct(query: str = Form(...), background_tasks: BackgroundTasks = BackgroundTasks()):
+def download_direct(background_tasks: BackgroundTasks, query: str = Form(...)):
     background_tasks.add_task(download_song, query, SEARCH_DIR)
     return JSONResponse({"status": "downloading"})
 
 @app.post("/api/open_folder")
-async def open_folder(folder_type: str = Form(...)):
+def open_folder(folder_type: str = Form(...)):
     try:
         target = SEARCH_DIR if folder_type == "search" else QUEUE_DIR
         os.makedirs(target, exist_ok=True)
-        subprocess.run(["open", target])
+        reveal_folder(target)
         return JSONResponse({"status": "success"})
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.post("/api/delete_request")
-async def delete_request(id: int = Form(...)):
+def delete_request(id: int = Form(...)):
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=10)
+        conn = sqlite3.connect(db_file(), timeout=10)
         c = conn.cursor()
         c.execute("DELETE FROM requests WHERE id=?", (id,))
         conn.commit()
@@ -257,9 +292,9 @@ async def delete_request(id: int = Form(...)):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.post("/api/clear_queue")
-async def clear_queue():
+def clear_queue():
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=10)
+        conn = sqlite3.connect(db_file(), timeout=10)
         c = conn.cursor()
         c.execute("DELETE FROM requests")
         conn.commit()

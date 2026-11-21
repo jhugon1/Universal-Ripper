@@ -1,0 +1,11 @@
+{
+  "path": "/updateDeck/A",
+  "body": {
+    "nextCuePos": null,
+    "nextCueName": null,
+    "nextCueType": null,
+    "prevCuePos": null,
+    "prevCueName": null,
+    "prevCueType": null
+  }
+}

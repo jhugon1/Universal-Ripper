@@ -1,0 +1,32 @@
+{
+  "path": "/deckLoaded/D",
+  "body": {
+    "filePath": "",
+    "title": "",
+    "artist": "",
+    "album": "",
+    "genre": "",
+    "comment": "",
+    "comment2": "",
+    "label": "",
+    "mix": "",
+    "remixer": "",
+    "key": "",
+    "keyText": "",
+    "gridOffset": 0,
+    "trackLength": 0,
+    "elapsedTime": 0,
+    "nextCuePos": null,
+    "nextCueName": null,
+    "nextCueType": null,
+    "prevCuePos": null,
+    "prevCueName": null,
+    "prevCueType": null,
+    "bpm": 120,
+    "tempo": 1,
+    "resultingKey": "",
+    "isPlaying": false,
+    "isSynced": false,
+    "isKeyLockOn": false
+  }
+}
