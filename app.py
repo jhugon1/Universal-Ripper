@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
+from ripper_queue import store as queue_store
 from traktor.receiver import TraktorReceiver, configured_port
 from traktor.state import TraktorState
 from filenames import ytdlp_outtmpl
@@ -169,6 +170,7 @@ def init_db():
                   timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS traktor_state
                  (id INTEGER PRIMARY KEY CHECK (id = 1), saved_at REAL, data TEXT)''')
+    queue_store.ensure_schema(conn)
     conn.commit()
     conn.close()
 
