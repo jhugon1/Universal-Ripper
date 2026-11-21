@@ -14,6 +14,7 @@ import json
 from fastapi.responses import StreamingResponse
 
 import subprocess
+import sys
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -132,6 +133,15 @@ def download_song(query: str, download_dir: str, request_id: int = None):
         }
         asyncio.run_coroutine_threadsafe(broadcast(notification), loop)
 
+def reveal_folder(path: str):
+    """Open a folder in the platform's file manager."""
+    if sys.platform.startswith("win"):
+        os.startfile(os.path.abspath(path))  # noqa: S606 (Windows only)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", path], check=False)
+    else:
+        subprocess.run(["xdg-open", path], check=False)
+
 @app.get("/", response_class=HTMLResponse)
 async def guest_view(request: Request):
     return templates.TemplateResponse(request=request, name="guest.html")
@@ -239,7 +249,7 @@ async def open_folder(folder_type: str = Form(...)):
     try:
         target = SEARCH_DIR if folder_type == "search" else QUEUE_DIR
         os.makedirs(target, exist_ok=True)
-        subprocess.run(["open", target])
+        reveal_folder(target)
         return JSONResponse({"status": "success"})
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
