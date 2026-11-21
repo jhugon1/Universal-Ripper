@@ -3,6 +3,7 @@
   python run.py          normal start
   python run.py --dev    reload the server when .py files change and reload open browser tabs
                          when the server restarts or a template/static file changes
+  python run.py --window open the booth display (/booth) in a chromeless Chrome/Edge app window
 """
 import argparse
 import importlib.util
@@ -20,6 +21,7 @@ import uvicorn
 
 PORT = 8000
 DJ_URL = f"http://localhost:{PORT}/dj"
+BOOTH_URL = f"http://localhost:{PORT}/booth"
 ROOT = Path(__file__).resolve().parent
 
 
@@ -36,19 +38,58 @@ def uvicorn_kwargs(dev: bool) -> dict:
     return kwargs
 
 
-def _open_when_ready():
+def find_chromium():
+    """Path of an installed Chrome or Edge (Chrome first), or None."""
+    if sys.platform.startswith("win"):
+        roots = [r for r in (os.environ.get(k) for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")) if r]
+        for rel in ("Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe"):
+            for root in roots:
+                if (Path(root) / rel).is_file():
+                    return str(Path(root) / rel)
+        return None
+    if sys.platform == "darwin":
+        for app in ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"):
+            if Path(app).is_file():
+                return app
+        return None
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def window_command(url, exe=None):
+    """Command line for a chromeless app window, or None if no Chrome/Edge is installed."""
+    exe = exe or find_chromium()
+    return [exe, f"--app={url}", "--window-size=1280,800"] if exe else None
+
+
+def open_url(url, window=False):
+    cmd = window_command(url) if window else None
+    if cmd:
+        subprocess.Popen(cmd)
+        return
+    if window:
+        print("Chrome/Edge not found; opening the booth in your default browser instead.")
+    webbrowser.open(url)
+
+
+def _open_when_ready(url, window=False):
     for _ in range(100):
         try:
             with socket.create_connection(("127.0.0.1", PORT), timeout=0.2):
                 break
         except OSError:
             time.sleep(0.1)
-    webbrowser.open(DJ_URL)
+    open_url(url, window)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dev", action="store_true", help="auto-reload server and browser (development only)")
+    ap.add_argument("--window", action="store_true", help="open /booth in a chromeless Chrome/Edge window")
     args = ap.parse_args(argv)
 
     if args.dev:
@@ -68,7 +109,7 @@ def main(argv=None):
     else:
         print("ngrok not found on PATH; running locally only.")
 
-    threading.Thread(target=_open_when_ready, daemon=True).start()
+    threading.Thread(target=_open_when_ready, args=(BOOTH_URL if args.window else DJ_URL, args.window), daemon=True).start()
     try:
         uvicorn.run("app:app", **uvicorn_kwargs(args.dev))
     finally:

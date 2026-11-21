@@ -16,8 +16,12 @@ CHANNEL_IDS = ("1", "2", "3", "4")
 # UNVERIFIED until the fader test: assumes deck N is on mixer channel N.
 DECK_TO_CHANNEL = {"A": "1", "B": "2", "C": "3", "D": "4"}
 AUDIBLE_LEVEL = 0.05
-# The mod posts elapsedTime every second while a deck plays; longer silence means stale data.
-STALE_AFTER = 3.0
+# The mod posts elapsedTime every second while a deck plays. Audible time is not credited across
+# gaps longer than CREDIT_GAP. The display marks a playing deck "stale" after STALE_AFTER seconds
+# of silence and shows it as paused after LOST_AFTER.
+CREDIT_GAP = 3.0
+STALE_AFTER = 5.0
+LOST_AFTER = 60.0
 
 _DECK_FIELDS = {
     "filePath": "file_path", "title": "title", "artist": "artist", "bpm": "bpm", "tempo": "tempo",
@@ -40,11 +44,25 @@ def _empty_deck():
         "file_path": None, "title": None, "artist": None, "bpm": None, "tempo": 1.0, "key": None,
         "track_length": None, "elapsed": 0.0, "elapsed_at": None, "is_playing": False,
         "loaded_at": None, "started_at": None, "audible_seconds": 0.0, "raw": {},
+        "updated_at": None, "restored": False,
     }
 
 
 def _empty_channel():
     return {"is_on_air": None, "on_air_level": None, "raw": {}}
+
+
+def deck_status(deck, now):
+    """What to show for a deck: empty, paused, playing, or stale (playing but the signal went quiet).
+    A deck that has been quiet for LOST_AFTER seconds is shown as paused."""
+    if not deck["file_path"]:
+        return "empty"
+    if not deck["is_playing"]:
+        return "paused"
+    age = None if deck["updated_at"] is None else now - deck["updated_at"]
+    if age is None or age > LOST_AFTER:
+        return "paused"
+    return "stale" if age > STALE_AFTER else "playing"
 
 
 def file_name_of(file_path):
@@ -91,7 +109,7 @@ class TraktorState:
         last, self._last_tick = self._last_tick, now
         if last is None or now <= last:
             return
-        if self.last_event_at is None or now - self.last_event_at > STALE_AFTER:
+        if self.last_event_at is None or now - self.last_event_at > CREDIT_GAP:
             return
         for deck_id in DECK_IDS:
             if self.is_audible(deck_id):
@@ -109,8 +127,9 @@ class TraktorState:
         self._tick(now)
         before = self.now_playing()
         changes = []
+        touched = None
         if kind in ("deckLoaded", "updateDeck") and arg.upper() in DECK_IDS:
-            deck_id = arg.upper()
+            deck_id = touched = arg.upper()
             if kind == "deckLoaded":
                 self._deck_loaded(deck_id, body, now, changes)
             else:
@@ -122,6 +141,9 @@ class TraktorState:
         else:
             self.ignored_count += 1
             return changes
+        if touched:  # any fresh event replaces restored data and shows the deck is alive
+            self.decks[touched]["updated_at"] = now
+            self.decks[touched]["restored"] = False
         self.last_event_at = now
         self.event_count += 1
         after = self.now_playing()
@@ -146,7 +168,7 @@ class TraktorState:
         if new_path is None:  # the startup burst sends this for every deck: the deck is empty
             fresh = _empty_deck()
             for field, value in fresh.items():
-                if field != "raw":
+                if field not in ("raw", "updated_at", "restored"):
                     self._set(d, "deck", deck_id, field, value, changes)
             d["raw"] = {}
             return
@@ -207,6 +229,7 @@ class TraktorState:
             d["raw"] = dict(d["raw"])
             d["file_name"] = file_name_of(d["file_path"])
             d["audible"] = self.is_audible(deck_id)
+            d["status"] = deck_status(self.decks[deck_id], now)
             if not include_path:
                 del d["file_path"]
             decks[deck_id] = d
@@ -219,4 +242,51 @@ class TraktorState:
             "master": dict(self.master),
             "seconds_since_event": None if self.last_event_at is None else now - self.last_event_at,
             "event_count": self.event_count,
+            "stale_after": STALE_AFTER,
+            "lost_after": LOST_AFTER,
         }
+
+    # ---- persistence (restart recovery) --------------------------------------------------
+    def dump(self):
+        """Everything needed to restore after a restart. Includes file paths: keep it in the local DB only."""
+        return {
+            "decks": {k: {f: v for f, v in d.items() if f != "raw"} for k, d in self.decks.items()},
+            "channels": {k: {f: v for f, v in c.items() if f != "raw"} for k, c in self.channels.items()},
+            "master": dict(self.master),
+            "last_played": self.last_played,
+        }
+
+    def load(self, data):
+        """Restore a dump(). Decks with a track are marked restored until a fresh event replaces them."""
+        blank = _empty_deck()
+        for deck_id, saved in (data.get("decks") or {}).items():
+            if deck_id not in self.decks or not isinstance(saved, dict):
+                continue
+            d = self.decks[deck_id]
+            for field in blank:
+                if field == "raw" or field not in saved:
+                    continue
+                value = saved[field]
+                if field in _STR_FIELDS:
+                    value = _clean_str(value)
+                elif field == "is_playing":
+                    value = value is True
+                elif field == "restored":
+                    continue
+                else:
+                    value = _num(value)
+                    if value is None and field in ("tempo", "elapsed", "audible_seconds"):
+                        value = blank[field]
+                d[field] = value
+            d["restored"] = bool(d["file_path"])
+        for channel_id, saved in (data.get("channels") or {}).items():
+            if channel_id in self.channels and isinstance(saved, dict):
+                ch = self.channels[channel_id]
+                ch["is_on_air"] = saved.get("is_on_air") if isinstance(saved.get("is_on_air"), bool) else None
+                ch["on_air_level"] = _num(saved.get("on_air_level"))
+        master = data.get("master")
+        if isinstance(master, dict):
+            self.master = {"deck": master.get("deck") if master.get("deck") in DECK_IDS else None,
+                           "bpm": _num(master.get("bpm"))}
+        lp = data.get("last_played")
+        self.last_played = lp if isinstance(lp, dict) else None
