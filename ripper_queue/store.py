@@ -24,10 +24,17 @@ SCHEMA = (
         source TEXT NOT NULL, request_id INTEGER, query TEXT, artist TEXT, title TEXT, video_id TEXT,
         status TEXT NOT NULL DEFAULT 'queued', file_path TEXT, length_s REAL, bpm REAL, error TEXT,
         added_at REAL NOT NULL, loaded_at REAL, played_at REAL,
-        marker_position INTEGER)""",  # marker_position: the position currently written into the file name
+        marker_position INTEGER, album TEXT, thumbnail TEXT, library_id INTEGER)""",  # marker_position: the prefix currently on the file name
     "CREATE INDEX IF NOT EXISTS queue_items_session ON queue_items (session_id, position)",
     "CREATE TABLE IF NOT EXISTS queue_meta (key TEXT PRIMARY KEY, value TEXT)",
+    """CREATE TABLE IF NOT EXISTS library
+       (id INTEGER PRIMARY KEY AUTOINCREMENT, video_id TEXT, artist TEXT, title TEXT, album TEXT, length_s REAL,
+        path TEXT NOT NULL UNIQUE, mtime_ns INTEGER, source TEXT NOT NULL DEFAULT 'rip', ripped_at REAL NOT NULL)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS library_video ON library (video_id) WHERE video_id IS NOT NULL",
 )
+
+# columns added after the first version of queue_items: older databases get them on start-up
+_ADDED_COLUMNS = (("album", "TEXT"), ("thumbnail", "TEXT"), ("library_id", "INTEGER"))
 
 
 def queue_dir() -> Path:
@@ -45,6 +52,10 @@ def open_db(path) -> sqlite3.Connection:
 def ensure_schema(conn):
     for statement in SCHEMA:
         conn.execute(statement)
+    have = {row[1] for row in conn.execute("PRAGMA table_info(queue_items)")}
+    for name, kind in _ADDED_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE queue_items ADD COLUMN {name} {kind}")
     conn.commit()
 
 
@@ -97,7 +108,8 @@ def list_items(conn, session_id, include_removed=False):
     return [dict(r) for r in conn.execute(sql + " ORDER BY position, id", (session_id,))]
 
 
-def add_item(conn, *, source, artist, title, query=None, video_id=None, request_id=None, now=None):
+def add_item(conn, *, source, artist, title, query=None, video_id=None, request_id=None, album=None,
+             thumbnail=None, now=None):
     """Append an item to the current session. Returns (item, created). A request that already has a
     live item gets that item back instead of a duplicate."""
     now = time.time() if now is None else now
@@ -111,8 +123,9 @@ def add_item(conn, *, source, artist, title, query=None, video_id=None, request_
                              (session["id"],)).fetchone()[0]) + 1
     cur = conn.execute(
         "INSERT INTO queue_items (playlist, session_id, position, source, request_id, query, artist, title, video_id, "
-        "status, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
-        (DEFAULT_PLAYLIST, session["id"], position, source, request_id, query, artist, title, video_id, now))
+        "album, thumbnail, status, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
+        (DEFAULT_PLAYLIST, session["id"], position, source, request_id, query, artist, title, video_id,
+         album, thumbnail, now))
     conn.commit()
     return get_item(conn, cur.lastrowid), True
 
@@ -176,6 +189,16 @@ def move_item(conn, item_id, direction):
         conn.execute("UPDATE queue_items SET position = ? WHERE id = ?", (position, pid))
     conn.commit()
     return list(plan)
+
+
+def meta_get(conn, key):
+    row = conn.execute("SELECT value FROM queue_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def meta_set(conn, key, value):
+    conn.execute("INSERT OR REPLACE INTO queue_meta (key, value) VALUES (?, ?)", (key, str(value)))
+    conn.commit()
 
 
 # ---- the "re-select the folder in Traktor" hint ------------------------------------------------

@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path, PureWindowsPath
 
 from mutagen import File as MutagenFile
-from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TIT2, TPE1
+from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TIT2, TPE1, TXXX
 
 from filenames import track_basename
 from . import store
@@ -88,13 +88,17 @@ def fetch_cover(url, timeout=10):
         return None
 
 
-def tag_file(path, *, title, artist, album=None, cover=None):
-    """Write title, artist, album and cover art as ID3v2.3. No track number: Traktor ignores it for order."""
+VIDEO_ID_FRAME = "TXXX:YT_VIDEO_ID"
+
+
+def tag_file(path, *, title, artist, album=None, cover=None, video_id=None):
+    """Write title, artist, album, cover art and the YouTube video id as ID3v2.3. No track number: Traktor
+    ignores it for order."""
     try:
         tags = ID3(path)
     except ID3NoHeaderError:
         tags = ID3()
-    for frame in ("TIT2", "TPE1", "TALB", "APIC"):
+    for frame in ("TIT2", "TPE1", "TALB", "APIC", VIDEO_ID_FRAME):
         tags.delall(frame)
     tags.add(TIT2(encoding=3, text=title))
     tags.add(TPE1(encoding=3, text=artist))
@@ -103,7 +107,39 @@ def tag_file(path, *, title, artist, album=None, cover=None):
     if cover:
         data, mime = cover
         tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
+    if video_id:
+        tags.add(TXXX(encoding=3, desc="YT_VIDEO_ID", text=video_id))
     tags.save(path, v2_version=3)
+
+
+def read_tags(path) -> dict:
+    """title, artist, album, video id and length of an mp3 (tags first; an untagged file falls back to its
+    `Artist - Title` file name)."""
+    path = Path(path)
+    out = {"title": None, "artist": None, "album": None, "video_id": None, "length_s": read_length(path)}
+    try:
+        tags = ID3(path)
+        out["title"] = str(tags["TIT2"]) if "TIT2" in tags else None
+        out["artist"] = str(tags["TPE1"]) if "TPE1" in tags else None
+        out["album"] = str(tags["TALB"]) if "TALB" in tags else None
+        out["video_id"] = str(tags[VIDEO_ID_FRAME]) if VIDEO_ID_FRAME in tags else None
+    except Exception:  # no ID3 header, or not readable
+        pass
+    if not out["title"]:
+        stem = _PREFIX.sub("", path.stem, count=1)
+        artist, sep, title = stem.partition(" - ")
+        out["artist"], out["title"] = (out["artist"] or artist, title) if sep else (out["artist"], stem)
+    return out
+
+
+def read_cover(path):
+    """(bytes, mime) of the embedded cover art, or None."""
+    try:
+        for frame in ID3(path).getall("APIC"):
+            return frame.data, frame.mime
+    except Exception:
+        pass
+    return None
 
 
 def read_length(path):

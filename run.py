@@ -60,7 +60,8 @@ def dev_defaults(environ=None, root=ROOT) -> dict:
     environ = os.environ if environ is None else environ
     dev_dir = Path(root) / "dev_data"
     chosen = {}
-    for name, value in (("RIPPER_DB", dev_dir / "queue.dev.db"), ("RIPPER_QUEUE_DIR", dev_dir / "Ripper Queue")):
+    for name, value in (("RIPPER_DB", dev_dir / "queue.dev.db"), ("RIPPER_QUEUE_DIR", dev_dir / "Ripper Queue"),
+                        ("RIPPER_LIBRARY_DIR", dev_dir / "Library")):
         if not environ.get(name):
             environ[name] = chosen[name] = str(value)
     if chosen:

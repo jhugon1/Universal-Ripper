@@ -12,6 +12,7 @@ from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
 from ripper_queue import files as queue_files
+from ripper_queue import library
 from ripper_queue import store as queue_store
 from ripper_queue import sync as queue_sync
 from ripper_queue.worker import QueueWorker
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
     global loop
     loop = asyncio.get_running_loop()
     init_db()
+    await run_in_threadpool(prepare_library)
     restore_traktor_state()
     print("Event loop captured for SSE")
     queue_worker.start()
@@ -114,6 +116,19 @@ TRAKTOR_PUSH_INTERVAL = 0.25  # at most 4 traktor_state events per second
 
 def traktor_event():
     return {"event": "traktor_state", "state": traktor_state.snapshot()}
+
+
+def prepare_library():
+    """Start-up: create the library folder, copy the old standalone rips in on the first run, index the folder."""
+    conn = queue_store.open_db(db_file())
+    try:
+        old = os.environ.get("RIPPER_OLD_RIPS_DIR") or str(Path(__file__).resolve().parent / "DJ_Search_Rips")
+        counts = library.ensure_ready(conn, old_dir=old, migrate=not devreload.is_dev())
+        print(f"Library: {counts}")
+    except Exception as exc:  # a broken library folder must not stop the app
+        print(f"Library could not be prepared: {exc}")
+    finally:
+        conn.close()
 
 
 def db_is_real() -> bool:
