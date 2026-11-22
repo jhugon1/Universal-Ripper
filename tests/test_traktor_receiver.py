@@ -171,7 +171,7 @@ def test_busy_port_does_not_break_the_app(app_env, monkeypatch):
         monkeypatch.setenv("RIPPER_TRAKTOR_PORT", str(blocker.getsockname()[1]))
         start = time.time()
         with TestClient(app_env.app) as c:
-            assert c.get("/api/queue").status_code == 200
+            assert c.get("/api/queue_items").status_code == 200
             assert c.get("/api/traktor/state").json()["now_playing"] is None
         assert time.time() - start < 3, "shutdown should not wait for the bind retry"
 

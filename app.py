@@ -7,8 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
@@ -202,12 +201,6 @@ async def broadcast(data):
 def init_db():
     conn = sqlite3.connect(db_file(), timeout=10)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS requests
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  artist TEXT, 
-                  song TEXT, 
-                  status TEXT DEFAULT 'pending', 
-                  timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS traktor_state
                  (id INTEGER PRIMARY KEY CHECK (id = 1), saved_at REAL, data TEXT)''')
     queue_store.ensure_schema(conn)
@@ -257,22 +250,18 @@ class YtBackend:
 
 
 async def on_queue_result(item_id, outcome):
-    """A queue item finished (ready / failed / removed): update its request and tell the pages."""
+    """A queue item finished (ready / failed / removed): tell the pages."""
     def finish():
         conn = queue_store.open_db(db_file())
         try:
-            item = queue_store.get_item(conn, item_id)
-            if item and item["request_id"] and outcome == "ready":
-                conn.execute("UPDATE requests SET status='downloaded' WHERE id=?", (item["request_id"],))
-                conn.commit()
-            return item
+            return queue_store.get_item(conn, item_id)
         finally:
             conn.close()
 
     item = await run_in_threadpool(finish)
     if item and outcome in ("ready", "failed"):
         event = {"event": "download_complete" if outcome == "ready" else "download_failed",
-                 "query": f"{item['artist']} {item['title']}", "request_id": item["request_id"],
+                 "query": f"{item['artist']} {item['title']}",
                  "status": "success" if outcome == "ready" else "error"}
         if outcome == "failed":
             event["message"] = item["error"]
@@ -299,7 +288,7 @@ def add_queue_item(**fields):
 
 def public_item(item):
     """An item for the pages: never the full file path (it contains the user's folder names)."""
-    keep = ("id", "session_id", "position", "source", "request_id", "artist", "title", "video_id", "status",
+    keep = ("id", "session_id", "position", "source", "artist", "title", "video_id", "status",
             "length_s", "bpm", "error", "added_at", "loaded_at", "played_at")
     out = {k: item[k] for k in keep}
     out["file_name"] = file_name_of(item["file_path"])
@@ -315,9 +304,9 @@ def reveal_folder(path: str):
     else:
         subprocess.run(["xdg-open", path], check=False)
 
-@app.get("/", response_class=HTMLResponse)
-async def guest_view(request: Request):
-    return templates.TemplateResponse(request=request, name="guest.html")
+@app.get("/")
+async def home():
+    return RedirectResponse("/dj")  # temporary: the one-page UI replaces this in pass 2
 
 @app.get("/booth", response_class=HTMLResponse)
 async def booth_view(request: Request):
@@ -326,68 +315,6 @@ async def booth_view(request: Request):
 @app.get("/dj", response_class=HTMLResponse)
 async def dj_dashboard(request: Request):
     return templates.TemplateResponse(request=request, name="dj.html")
-
-@app.post("/api/request")
-def submit_request(artist: str = Form(...), song: str = Form(...)):
-    query = f"{artist} {song}"
-    yt = get_ytmusic()
-    # Search for songs first
-    results = yt.search(query, filter="songs", limit=1)
-    
-    final_artist = artist
-    final_song = song
-    
-    if results:
-        best_match = results[0]
-        final_song = best_match.get('title', song)
-        artists = best_match.get('artists', [])
-        if artists:
-            final_artist = ", ".join([a['name'] for a in artists])
-    else:
-        # Try generic search if no "songs" found
-        results = yt.search(query, limit=1)
-        if results:
-            best_match = results[0]
-            final_song = best_match.get('title', song)
-            artists = best_match.get('artists', [])
-            if artists and isinstance(artists, list):
-                final_artist = artists[0].get('name', artist)
-
-    conn = sqlite3.connect(db_file(), timeout=10)
-    c = conn.cursor()
-    c.execute("INSERT INTO requests (artist, song, status) VALUES (?, ?, 'pending')", (final_artist, final_song))
-    conn.commit()
-    conn.close()
-    return JSONResponse({
-        "status": "success", 
-        "matched_artist": final_artist, 
-        "matched_song": final_song
-    })
-
-@app.get("/api/queue")
-def get_queue():
-    conn = sqlite3.connect(db_file(), timeout=10)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM requests ORDER BY timestamp DESC")
-    rows = [dict(row) for row in c.fetchall()]
-    conn.close()
-    return JSONResponse(rows)
-
-@app.post("/api/update_status")
-def update_status(id: int = Form(...), status: str = Form(...)):
-    conn = sqlite3.connect(db_file(), timeout=10)
-    c = conn.cursor()
-    c.execute("SELECT artist, song FROM requests WHERE id=?", (id,))
-    row = c.fetchone()
-    if row:
-        c.execute("UPDATE requests SET status=? WHERE id=?", (status, id))
-        conn.commit()
-        # Approving a request puts it in tonight's queue; the queue worker downloads it
-        if status == 'selected':
-            add_queue_item(source="request", request_id=id, artist=row[0], title=row[1])
-    conn.close()
-    return JSONResponse({"status": "success"})
 
 def queue_state(conn):
     """Tonight's session, its items in order, and whether Traktor needs the folder re-selected."""
@@ -507,13 +434,6 @@ def universal_search(query: str = Form(...)):
         results = yt.search(query, limit=8)
     return JSONResponse(results[:8])
 
-@app.post("/api/download_direct")
-def download_direct(query: str = Form(...)):
-    """Kept for compatibility. Nothing is ripped into a separate folder any more: this adds the track to
-    tonight's queue (artist and title are taken from the best match when the download runs)."""
-    item = add_queue_item(source="dj", artist="", title=query, query=query)
-    return JSONResponse({"status": "downloading", "queued": True, "id": item["id"]})
-
 @app.post("/api/open_folder")
 def open_folder(folder_type: str = Form(...)):
     try:
@@ -524,30 +444,6 @@ def open_folder(folder_type: str = Form(...)):
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
-@app.post("/api/delete_request")
-def delete_request(id: int = Form(...)):
-    try:
-        conn = sqlite3.connect(db_file(), timeout=10)
-        c = conn.cursor()
-        c.execute("DELETE FROM requests WHERE id=?", (id,))
-        conn.commit()
-        conn.close()
-        return JSONResponse({"status": "success"})
-    except Exception as e:
-        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
-
-@app.post("/api/clear_queue")
-def clear_queue():
-    try:
-        conn = sqlite3.connect(db_file(), timeout=10)
-        c = conn.cursor()
-        c.execute("DELETE FROM requests")
-        conn.commit()
-        conn.close()
-        return JSONResponse({"status": "success"})
-    except Exception as e:
-        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

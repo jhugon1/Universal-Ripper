@@ -96,68 +96,6 @@ def first_item_with(c, status):
     return wait_for(lambda: next((i for i in items_of(c) if i["status"] == status), None))
 
 
-def test_full_flow(client):
-    c, _ = client
-    r = c.post("/api/request", data={"artist": "x", "song": "y"})
-    assert r.status_code == 200
-    assert r.json()["matched_artist"] == "Fake Artist"
-    assert r.json()["matched_song"] == "Fake Song"
-
-    rows = c.get("/api/queue").json()
-    assert len(rows) == 1 and rows[0]["status"] == "pending"
-    rid = rows[0]["id"]
-
-    assert c.post("/api/update_status", data={"id": rid, "status": "approved"}).json() == {"status": "success"}
-    assert c.get("/api/queue").json()[0]["status"] == "approved"
-    assert items_of(c) == []  # only "selected" puts a request in the queue
-
-    assert c.post("/api/delete_request", data={"id": rid}).json() == {"status": "success"}
-    assert c.get("/api/queue").json() == []
-
-    c.post("/api/request", data={"artist": "a", "song": "b"})
-    c.post("/api/request", data={"artist": "c", "song": "d"})
-    assert len(c.get("/api/queue").json()) == 2
-    assert c.post("/api/clear_queue").json() == {"status": "success"}
-    assert c.get("/api/queue").json() == []
-
-
-def test_approved_request_downloads_into_the_session_folder(client, tmp_path):
-    c, app_module = client
-    q = asyncio.Queue()
-    app_module.subscribers.add(q)
-    try:
-        c.post("/api/request", data={"artist": "x", "song": "y"})
-        rid = c.get("/api/queue").json()[0]["id"]
-        c.post("/api/update_status", data={"id": rid, "status": "selected"})
-        c.post("/api/update_status", data={"id": rid, "status": "selected"})  # approving twice adds nothing
-
-        item = first_item_with(c, "ready")
-        state = c.get("/api/queue_items").json()
-        assert len(state["items"]) == 1 and item["position"] == 1 and item["source"] == "request"
-        folder = tmp_path / "Ripper Queue" / state["session"]["name"]
-        path = folder / "001 Fake Artist - Fake Song.mp3"
-        assert path.is_file() and list(folder.iterdir()) == [path]  # no .part or temp files left behind
-        assert item["file_name"] == path.name and item["length_s"] == pytest.approx(1.0, abs=0.2)
-
-        tags = ID3(path)
-        assert (str(tags["TIT2"]), str(tags["TPE1"]), str(tags["TALB"])) == ("Fake Song", "Fake Artist", "Fake Album")
-        assert tags["APIC:Cover"].data == JPEG
-        assert FakeYDL.downloads[0][1] == ["https://music.youtube.com/watch?v=vid123"]
-
-        assert c.get("/api/queue").json()[0]["status"] == "downloaded"  # the guest request is marked as before
-        assert state["folder"]["reselect_needed"] is True
-        assert "file_path" not in item and str(tmp_path) not in json.dumps(state)
-
-        events = []
-        wait_for(lambda: events.extend(
-            json.loads(q.get_nowait().removeprefix("data: ")) for _ in range(q.qsize())) or
-            any(e["event"] == "download_complete" for e in events))
-        done = next(e for e in events if e["event"] == "download_complete")
-        assert done["request_id"] == rid and done["status"] == "success"
-    finally:
-        app_module.subscribers.discard(q)
-
-
 def test_dj_can_add_a_track_and_positions_follow_the_order_added(client):
     c, _ = client
     a = c.post("/api/queue_items/add", data={"artist": "A", "title": "One"}).json()
@@ -356,16 +294,3 @@ def test_printing_a_non_latin_title_cannot_break_the_app(monkeypatch):
     assert b"Broadcasting event:" in raw.getvalue()
 
 
-def test_download_direct_adds_to_tonights_queue_and_never_to_a_search_folder(client, tmp_path):
-    c, app_module = client
-    legacy = ROOT / "DJ_Search_Rips"
-    before = sorted(p.name for p in legacy.iterdir()) if legacy.exists() else None
-    answer = c.post("/api/download_direct", data={"query": "fake song fake artist"}).json()
-    assert answer["status"] == "downloading" and answer["queued"] is True
-    item = first_item_with(c, "ready")
-    assert (item["artist"], item["title"]) == ("Fake Artist", "Fake Song")  # taken from the best match
-    assert item["file_name"] == "001 Fake Artist - Fake Song.mp3" and item["source"] == "dj"
-    session = c.get("/api/queue_items").json()["session"]["name"]
-    assert (tmp_path / "Ripper Queue" / session / item["file_name"]).is_file()
-    assert (sorted(p.name for p in legacy.iterdir()) if legacy.exists() else None) == before  # nothing new there
-    assert not hasattr(app_module, "SEARCH_DIR") and not hasattr(app_module, "download_song")

@@ -1,4 +1,4 @@
-"""Cross-platform launcher: web app on :8000, optional ngrok, open the DJ dashboard.
+"""Cross-platform launcher: web app on 127.0.0.1:8000 (this machine only), then open the page.
 
   python run.py          normal start
   python run.py --dev    reload the server when .py files change and reload open browser tabs
@@ -69,7 +69,7 @@ def dev_defaults(environ=None, root=ROOT) -> dict:
 
 
 def uvicorn_kwargs(dev: bool) -> dict:
-    kwargs = {"host": "0.0.0.0", "port": PORT}
+    kwargs = {"host": "127.0.0.1", "port": PORT}
     if dev:
         # watchfiles (requirements-dev.txt) skips .venv; uvicorn's fallback reloader would scan it.
         kwargs.update(
@@ -154,23 +154,8 @@ def main(argv=None):
         for name, value in dev_defaults().items():
             print(f"Dev mode: {name} = {value} (separate from your real data)")
 
-    ngrok = None
-    if shutil.which("ngrok"):
-        print("Starting ngrok tunnel...")
-        ngrok = subprocess.Popen(
-            ["ngrok", "http", str(PORT), "--log=stdout"],
-            stdout=subprocess.DEVNULL,
-        )
-        print("ngrok URL: see http://127.0.0.1:4040")
-    else:
-        print("ngrok not found on PATH; running locally only.")
-
     threading.Thread(target=_open_when_ready, args=(window_urls(args.window, args.no_booth), args.window), daemon=True).start()
-    try:
-        uvicorn.run("app:app", **uvicorn_kwargs(args.dev))
-    finally:
-        if ngrok:
-            ngrok.terminate()
+    uvicorn.run("app:app", **uvicorn_kwargs(args.dev))
 
 
 if __name__ == "__main__":
