@@ -7,12 +7,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
 from ripper_queue import files as queue_files
 from ripper_queue import library
+from ripper_queue import rip as queue_rip
+from ripper_queue import search as queue_search
 from ripper_queue import store as queue_store
 from ripper_queue import sync as queue_sync
 from ripper_queue.worker import QueueWorker
@@ -228,25 +230,7 @@ def notify(notification: dict):
         asyncio.run_coroutine_threadsafe(broadcast(notification), loop)
 
 class YtBackend:
-    """What the queue worker needs from YouTube: look a track up and download its audio."""
-
-    def lookup(self, item):
-        yt = get_ytmusic()
-        query = item["query"] or f"{item['artist']} {item['title']}"
-        results = yt.search(query, filter="songs") or yt.search(query)
-        if not results:
-            raise RuntimeError(f"No results found for: {query}")
-        match = next((r for r in results if item["video_id"] and r.get("videoId") == item["video_id"]), None)
-        if match is None and not item["video_id"]:
-            match = results[0]
-        video_id = item["video_id"] or (match or {}).get("videoId")
-        if not video_id:
-            raise RuntimeError(f"Could not find a video for: {query}")
-        thumbs = (match or {}).get("thumbnails") or []
-        names = [a.get("name") for a in ((match or {}).get("artists") or []) if a.get("name")]
-        return {"video_id": video_id, "album": ((match or {}).get("album") or {}).get("name"),
-                "thumbnail": thumbs[-1].get("url") if thumbs else None,
-                "artist": ", ".join(names) or None, "title": (match or {}).get("title")}
+    """What the queue worker needs from YouTube: download a video's audio as mp3."""
 
     def download(self, video_id, dest_dir):
         opts = {
@@ -265,7 +249,7 @@ class YtBackend:
 
 
 async def on_queue_result(item_id, outcome):
-    """A queue item finished (ready / failed / removed): tell the pages."""
+    """A queued rip finished (ready / failed / removed): tell the page, which shows the toast."""
     def finish():
         conn = queue_store.open_db(db_file())
         try:
@@ -275,35 +259,18 @@ async def on_queue_result(item_id, outcome):
 
     item = await run_in_threadpool(finish)
     if item and outcome in ("ready", "failed"):
-        event = {"event": "download_complete" if outcome == "ready" else "download_failed",
-                 "query": f"{item['artist']} {item['title']}",
-                 "status": "success" if outcome == "ready" else "error"}
-        if outcome == "failed":
-            event["message"] = item["error"]
-        await broadcast(event)
+        await broadcast({"event": "rip_result", "kind": "new", "id": item_id, "ok": outcome == "ready",
+                         "video_id": item["video_id"], "title": item["title"], "artist": item["artist"],
+                         "message": item["error"] if outcome == "failed" else None})
     await broadcast({"event": "queue_update", "id": item_id, "status": outcome})
 
 
 queue_worker = QueueWorker(db_file, queue_store.queue_dir, YtBackend(), on_queue_result)
 
 
-def add_queue_item(**fields):
-    """Add an item to tonight's session and wake the worker. Returns the item."""
-    fields.setdefault("query", f"{fields['artist']} {fields['title']}")
-    conn = queue_store.open_db(db_file())
-    try:
-        item, created = queue_store.add_item(conn, **fields)
-    finally:
-        conn.close()
-    if created:
-        queue_worker.wake_threadsafe()
-        notify({"event": "queue_update", "status": "added"})
-    return item
-
-
 def public_item(item):
     """An item for the pages: never the full file path (it contains the user's folder names)."""
-    keep = ("id", "session_id", "position", "source", "artist", "title", "video_id", "status",
+    keep = ("id", "session_id", "position", "source", "artist", "title", "album", "video_id", "status",
             "length_s", "bpm", "error", "added_at", "loaded_at", "played_at")
     out = {k: item[k] for k in keep}
     out["file_name"] = file_name_of(item["file_path"])
@@ -362,9 +329,59 @@ def queue_action(action, changed=False):
 def get_queue_items():
     return queue_action(lambda conn: None)
 
-@app.post("/api/queue_items/add")
-def add_queue_item_route(artist: str = Form(...), title: str = Form(...), video_id: str | None = Form(None)):
-    return JSONResponse(public_item(add_queue_item(source="dj", artist=artist, title=title, video_id=video_id or None)))
+@app.post("/api/rip")
+def rip_track(video_id: str = Form(...), artist: str = Form(...), title: str = Form(...),
+              album: str | None = Form(None), thumbnail: str | None = Form(None)):
+    """Rip one track (the only way anything is downloaded). Answers with what happened: new (downloading now),
+    duplicate (already in the library: linked into tonight's folder, never downloaded again), in_queue (already
+    in tonight's queue: nothing changed) or error."""
+    conn = queue_store.open_db(db_file())
+    try:
+        outcome = queue_rip.request_rip(conn, video_id=video_id, artist=artist, title=title,
+                                        album=album or None, thumbnail=thumbnail or None, root=queue_store.queue_dir())
+    finally:
+        conn.close()
+    kind = outcome["kind"]
+    if kind == "new":
+        queue_worker.wake_threadsafe()
+    if kind in ("new", "duplicate", "error"):
+        notify({"event": "queue_update", "status": "added"})
+    return JSONResponse({"kind": kind, "item": public_item(outcome["item"]), "message": outcome.get("message"),
+                         "cover": f"/api/library/cover/{video_id}" if kind == "duplicate" else None})
+
+@app.get("/api/library/cover/{video_id}")
+def library_cover(video_id: str):
+    """The cover art embedded in the library file for this video (the page falls back to its own picture)."""
+    conn = queue_store.open_db(db_file())
+    try:
+        entry = library.find(conn, video_id)
+    finally:
+        conn.close()
+    cover = queue_files.read_cover(entry["path"]) if entry else None
+    if not cover:
+        return JSONResponse({"status": "no cover"}, status_code=404)
+    return Response(content=cover[0], media_type=cover[1], headers={"Cache-Control": "max-age=3600"})
+
+@app.get("/api/search")
+def universal_search(q: str):
+    """Search YouTube Music (songs first, then anything), or look up a pasted YouTube / YouTube Music link.
+    Each result says whether that exact video is already in the library."""
+    yt = get_ytmusic()
+    video_id = queue_search.video_id_from_text(q)
+    if video_id:
+        found = queue_search.normalize_song(yt.get_song(video_id))
+        results = [found] if found else []
+    else:
+        raw = yt.search(q, filter="songs", limit=8) or yt.search(q, limit=8)
+        results = [r for r in (queue_search.normalize_result(x) for x in raw[:8]) if r]
+    conn = queue_store.open_db(db_file())
+    try:
+        known = library.known_ids(conn, [r["video_id"] for r in results])
+    finally:
+        conn.close()
+    for r in results:
+        r["in_library"] = r["video_id"] in known
+    return JSONResponse(results)
 
 @app.post("/api/queue_items/move")
 def move_queue_item(id: int = Form(...), direction: str = Form(...)):
@@ -440,14 +457,6 @@ async def events(request: Request):
             subscribers.discard(q)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-@app.post("/api/search")
-def universal_search(query: str = Form(...)):
-    yt = get_ytmusic()
-    results = yt.search(query, filter="songs", limit=8)
-    if not results:
-        results = yt.search(query, limit=8)
-    return JSONResponse(results[:8])
 
 @app.post("/api/open_folder")
 def open_folder(folder_type: str = Form(...)):

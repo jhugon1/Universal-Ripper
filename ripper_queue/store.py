@@ -108,23 +108,16 @@ def list_items(conn, session_id, include_removed=False):
     return [dict(r) for r in conn.execute(sql + " ORDER BY position, id", (session_id,))]
 
 
-def add_item(conn, *, source, artist, title, query=None, video_id=None, request_id=None, album=None,
-             thumbnail=None, now=None):
-    """Append an item to the current session. Returns (item, created). A request that already has a
-    live item gets that item back instead of a duplicate."""
+def add_item(conn, *, source, artist, title, query=None, video_id=None, album=None, thumbnail=None, now=None):
+    """Append an item to the current session. Returns (item, True)."""
     now = time.time() if now is None else now
-    if request_id is not None:
-        row = conn.execute("SELECT * FROM queue_items WHERE request_id = ? AND status NOT IN ('removed', 'failed') "
-                           "ORDER BY id DESC LIMIT 1", (request_id,)).fetchone()
-        if row:
-            return dict(row), False
     session = current_session(conn, now)
     position = (conn.execute("SELECT COALESCE(MAX(position), 0) FROM queue_items WHERE session_id = ?",
                              (session["id"],)).fetchone()[0]) + 1
     cur = conn.execute(
-        "INSERT INTO queue_items (playlist, session_id, position, source, request_id, query, artist, title, video_id, "
-        "album, thumbnail, status, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
-        (DEFAULT_PLAYLIST, session["id"], position, source, request_id, query, artist, title, video_id,
+        "INSERT INTO queue_items (playlist, session_id, position, source, query, artist, title, video_id, "
+        "album, thumbnail, status, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
+        (DEFAULT_PLAYLIST, session["id"], position, source, query, artist, title, video_id,
          album, thumbnail, now))
     conn.commit()
     return get_item(conn, cur.lastrowid), True

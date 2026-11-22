@@ -8,6 +8,7 @@ Rules (Traktor records the paths of loaded tracks in its collection, so files mu
 """
 import os
 import re
+import shutil
 import urllib.request
 from pathlib import Path, PureWindowsPath
 
@@ -60,6 +61,24 @@ def free_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         n += 1
+
+
+def place_link(source, folder, name):
+    """A new file `name` in `folder` that IS `source`: a hard link (same data, no extra space), or a copy when a
+    link is not possible (another drive, a file system without links). Never overwrites: a taken name gets
+    " (2)". Returns (path, "hardlink" | "copy")."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = free_path(folder / name)
+    try:
+        os.link(source, target)
+        return target, "hardlink"
+    except OSError:
+        pass
+    part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
+    shutil.copyfile(source, part)
+    os.replace(part, target)
+    return target, "copy"
 
 
 # ---- tags and length -------------------------------------------------------------------------

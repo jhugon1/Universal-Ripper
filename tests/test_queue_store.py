@@ -67,13 +67,6 @@ def test_positions_increase_and_never_repeat(db):
     assert add(db, 4)["position"] == 4  # a removed item's number is not reused
 
 
-def test_a_request_gets_one_live_item(db):
-    first, created = store.add_item(db, source="request", request_id=7, artist="A", title="T")
-    again, created2 = store.add_item(db, source="request", request_id=7, artist="A", title="T")
-    assert created and not created2 and first["id"] == again["id"]
-    store.update_item(db, first["id"], status="failed")
-    assert store.add_item(db, source="request", request_id=7, artist="A", title="T")[1] is True  # failed: may be re-approved
-
 
 def test_claim_takes_the_lowest_position_once(db):
     a, b = add(db, 1), add(db, 2)

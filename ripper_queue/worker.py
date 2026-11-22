@@ -1,7 +1,7 @@
 """Download worker for queue items.
 
-`process()` does one item end to end (look up, download, tag, place in the session folder) and is
-plain synchronous code, run in a thread. `QueueWorker` is the asyncio loop that claims queued
+`process()` does one item end to end (download into the library if needed, tag, link into tonight's
+folder) and is plain synchronous code, run in a thread. `QueueWorker` is the asyncio loop that claims queued
 items, runs one or two at a time, retries the order prefixes of files that were busy, and reports
 results. The outside world (YouTube lookup, yt-dlp) comes in through a `backend` object.
 """
@@ -14,7 +14,8 @@ from pathlib import Path
 
 from starlette.concurrency import run_in_threadpool
 
-from . import files, nml, store
+from filenames import track_basename
+from . import files, library, nml, rip, store
 
 MAX_ATTEMPTS = 2        # one retry
 CONCURRENCY = 2
@@ -29,7 +30,8 @@ def clean_error(exc) -> str:
 
 
 def process(db_path, item_id, root, backend):
-    """Download and place one claimed item. Returns "ready", "failed" or "removed"."""
+    """Finish one claimed item: make sure its video is in the library (downloading it only if it is not), then
+    link it into tonight's folder. Returns "ready", "failed" or "removed"."""
     conn = store.open_db(db_path)
     try:
         error = None
@@ -48,36 +50,34 @@ def _attempt(conn, item_id, root, backend):
     item = store.get_item(conn, item_id)
     if not item or item["status"] != "downloading":
         return "removed"
-    meta = backend.lookup(item)
-    # an item added from free text (download_direct) has no artist yet: take both from the best match
-    from_match = not item["artist"]
-    artist = (meta.get("artist") or "Unknown Artist") if from_match else item["artist"]
-    title = (meta.get("title") or item["title"]) if from_match else item["title"]
+    entry = library.find(conn, item["video_id"])  # it may have arrived in the meantime
+    if entry is None:
+        entry = _download_into_library(conn, item, backend)
+    item = store.get_item(conn, item_id)  # the DJ may have removed it while it downloaded
+    if item["status"] != "downloading":
+        return "removed"  # the rip stays in the library; nothing is put into tonight's folder
+    rip.link_item(conn, item, entry, root)
+    return "ready"
+
+
+def _download_into_library(conn, item, backend):
     tmp = Path(tempfile.mkdtemp(prefix="ripper_queue_"))
     try:
-        audio = Path(backend.download(meta["video_id"], tmp))
-        cover = files.fetch_cover(meta["thumbnail"]) if meta.get("thumbnail") else None
-        files.tag_file(audio, title=title, artist=artist, album=meta.get("album"), cover=cover)
+        audio = Path(backend.download(item["video_id"], tmp))
+        cover = files.fetch_cover(item["thumbnail"]) if item["thumbnail"] else None
+        files.tag_file(audio, title=item["title"], artist=item["artist"], album=item["album"], cover=cover,
+                       video_id=item["video_id"])
         length = files.read_length(audio)
-
-        item = store.get_item(conn, item_id)  # the DJ may have removed it or moved it meanwhile
-        if item["status"] != "downloading":
-            return "removed"
-        session = conn.execute("SELECT name FROM sessions WHERE id = ?", (item["session_id"],)).fetchone()["name"]
-        folder = Path(root) / session
+        folder = library.library_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        target = files.free_path(folder / files.item_filename(item["position"], artist, title))
+        target = files.free_path(folder / f"{track_basename(item['artist'], item['title'])}.mp3")
         part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
         shutil.copyfile(audio, part)
         os.replace(part, target)
-        conn.execute("UPDATE queue_items SET status = 'ready', file_path = ?, length_s = ?, marker_position = ?, "
-                     "artist = ?, title = ?, error = NULL WHERE id = ? AND status = 'downloading'",
-                     (str(target), length, item["position"], artist, title, item_id))
-        conn.commit()
-        store.mark_folder_changed(conn)
-        return "ready"
+        return library.add(conn, video_id=item["video_id"], artist=item["artist"], title=item["title"],
+                           album=item["album"], length_s=length, path=target)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)  # our own temp folder, never the queue folder
+        shutil.rmtree(tmp, ignore_errors=True)  # our own temp folder, never the library or the queue folder
 
 
 class QueueWorker:
