@@ -15,26 +15,34 @@
   <section id="decks" aria-label="Decks">
     {% for letter in ["A", "B"] %}
     <div class="deck" data-deck="{{ letter }}">
-      <div class="deck-head">
-        <span class="deck-letter">DECK {{ letter }}</span>
-        <button class="deck-reset" type="button" title="Forget the deck state shown here" style="visibility: hidden">Reset</button>
-        <span class="deck-state"></span>
-      </div>
-      <div class="deck-titles">
-        <div class="deck-title"></div>
-        <div class="deck-artist"></div>
-      </div>
-      <div class="deck-mid">
-        <div class="deck-time"></div>
-        <div class="deck-stats">
-          <div class="stat"><span class="stat-label">BPM</span><span class="stat-value deck-bpm"></span></div>
-          <div class="stat"><span class="stat-label">Key</span><span class="stat-value deck-key"></span></div>
+      <div class="deck-top">
+        <div class="deck-art"><span></span></div>
+        <div class="deck-titles">
+          <div class="deck-title"></div>
+          <div class="deck-artist"></div>
+          <div class="deck-state"></div>
         </div>
+        <div class="deck-num">
+          <div class="deck-time"></div>
+          <div class="deck-sub deck-total"></div>
+        </div>
+        <div class="deck-num">
+          <div class="deck-bpm"></div>
+          <div class="deck-sub deck-tempo"></div>
+        </div>
+        <div class="deck-letter">{{ letter }}</div>
       </div>
-      <div class="deck-foot">
-        <div class="bar" role="img" aria-label="Track progress"><div class="bar-fill"></div></div>
-        <div class="deck-times"></div>
+      <div class="deck-btns">
+        <span class="dbtn dbtn-sync">SYNC</span>
+        <span class="dbtn dbtn-master">MASTER</span>
+        <div class="deck-keybox"><span class="deck-keylabel">KEY</span> <span class="deck-key"></span></div>
+        <button class="deck-reset" type="button" title="Forget the deck state shown here" style="visibility: hidden">Reset</button>
       </div>
+      <div class="deck-wave" role="img" aria-label="Track progress">
+        <div class="bar"><div class="bar-fill"></div></div>
+        <div class="deck-playhead"></div>
+      </div>
+      <div class="deck-times"></div>
     </div>
     {% endfor %}
   </section>

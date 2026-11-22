@@ -62,6 +62,7 @@
     decks[card.dataset.deck] = {
       card, state: $('.deck-state', card), title: $('.deck-title', card), artist: $('.deck-artist', card),
       time: $('.deck-time', card), bpm: $('.deck-bpm', card), key: $('.deck-key', card), fill: $('.bar-fill', card),
+      total: $('.deck-total', card), tempo: $('.deck-tempo', card), master: $('.dbtn-master', card), head: $('.deck-playhead', card),
       times: $('.deck-times', card), reset: $('.deck-reset', card),
     };
   });
@@ -87,38 +88,46 @@
     return d.track_length ? Math.min(e, d.track_length) : e;
   }
 
+  const clock = (sec) => { const t = Math.max(0, Math.round(sec)); return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0'); };
+
   function renderDeck(letter, now) {
     const d = snap.decks[letter], ui = decks[letter];
     if (!d || !ui) return;
     const st = deckStatus(d, now);
-    let stateText, stateColor, timeColor = C.text, opacity = 1;
-    if (st === 'empty') { stateText = 'EMPTY'; stateColor = C.faint; timeColor = C.faint; }
-    else if (st === 'playing') { stateText = 'PLAYING'; stateColor = C.accent; timeColor = C.accent; }
-    else if (st === 'paused') { stateText = 'PAUSED'; stateColor = C.muted; opacity = 0.85; }
-    else { stateText = 'TRAKTOR SIGNAL LOST'; stateColor = C.warn; timeColor = C.accent; opacity = 0.5; }
+    let stateText = '', stateColor = C.muted, opacity = 1, timeColor = '';
+    if (st === 'empty') { stateText = 'EMPTY'; stateColor = C.faint; }
+    else if (st === 'playing') { stateText = 'PLAYING'; stateColor = C.accent; }
+    else if (st === 'paused') { stateText = 'PAUSED'; opacity = 0.85; }
+    else { stateText = 'TRAKTOR SIGNAL LOST'; stateColor = C.warn; opacity = 0.5; }
     if (d.restored && st !== 'stale' && st !== 'empty') stateText += ' ' + DOT + ' RESTORED';
 
     if (st === 'empty') {
-      setText(ui.title, 'Empty'); setStyle(ui.title, 'color', C.faint);
-      setText(ui.artist, '');
-      setText(ui.time, MINUS + ':' + MINUS + MINUS);
-      setText(ui.bpm, DASH); setText(ui.key, DASH);
-      setStyle(ui.fill, 'width', '0%');
-      setText(ui.times, DASH);
+      setText(ui.title, 'Empty'); setText(ui.artist, '');
+      setText(ui.time, '-' + '--:--'); setText(ui.total, '--:--');
+      setText(ui.bpm, '---.--'); setText(ui.tempo, '');
+      setText(ui.key, DASH);
+      setStyle(ui.fill, 'width', '0%'); setStyle(ui.head, 'left', '0%');
+      setText(ui.times, '');
     } else {
       const tempo = d.tempo || 1, len = d.track_length || 0, e = shownElapsed(d, st, now);
       const remaining = len ? (len - e) / tempo : null;
       if (st === 'playing' && remaining != null && remaining < 30) timeColor = C.warn;
-      setText(ui.title, d.title || stem(d.file_name)); setStyle(ui.title, 'color', '');
-      setText(ui.artist, d.artist || '');
-      setText(ui.time, remaining == null ? MINUS + ':' + MINUS + MINUS : MINUS + fmt(Math.ceil(remaining)));
-      setText(ui.bpm, d.bpm ? (d.bpm * tempo).toFixed(1) : DASH);
+      const pct = (len ? Math.min(100, Math.max(0, e / len * 100)) : 0).toFixed(2) + '%';
+      setText(ui.title, d.title || stem(d.file_name)); setText(ui.artist, d.artist || '');
+      setText(ui.time, remaining == null ? '-' + '--:--' : '-' + clock(Math.ceil(remaining)));
+      setText(ui.total, len ? clock(len) : '--:--');
+      setText(ui.bpm, d.bpm ? (d.bpm * tempo).toFixed(2) : '---.--');
+      const pc = (tempo - 1) * 100;
+      setText(ui.tempo, (pc >= 0 ? '+' : MINUS) + Math.abs(pc).toFixed(1) + '%');
       setText(ui.key, d.key || DASH);
-      setStyle(ui.fill, 'width', (len ? Math.min(100, Math.max(0, e / len * 100)) : 0).toFixed(2) + '%');
-      setText(ui.times, len ? fmt(e) + ' / ' + fmt(len) : fmt(e));
+      setStyle(ui.fill, 'width', pct); setStyle(ui.head, 'left', pct);
+      setText(ui.times, '');
     }
+    const isMaster = snap.master && snap.master.deck === letter && st !== 'empty';
+    ui.master.classList.toggle('on', !!isMaster);
     setText(ui.state, stateText); setStyle(ui.state, 'color', stateColor);
-    setStyle(ui.time, 'color', timeColor); setStyle(ui.fill, 'background', timeColor);
+    setStyle(ui.time, 'color', timeColor); setStyle(ui.fill, 'background', timeColor || C.accent);
+    setStyle(ui.title, 'color', st === 'empty' ? C.faint : '');
     setStyle(ui.card, 'opacity', String(opacity));
     setStyle(ui.reset, 'visibility', (d.restored || st === 'stale') ? 'visible' : 'hidden');   // only when there is something to forget
   }
