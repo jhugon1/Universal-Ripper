@@ -193,21 +193,19 @@
     requestAnimationFrame(frame);
   }
 
-  // ---- Up Next: the oldest request that is selected or downloaded ----
-  function renderNext(row) {
+  // ---- Up Next: the next ready track of tonight's queue (lowest position, not yet loaded or played) ----
+  function renderNext(state) {
     const box = $('#next');
-    box.classList.toggle('none', !row);
-    setText($('.ntitle', box), row ? row.song : 'Queue empty');
-    setText($('.nartist', box), row ? row.artist : '');
-    setText($('#nbpm'), '—');   // requests carry no BPM or length yet (Phase 3)
-    setText($('#nlen'), '—');
+    const next = state && state.up_next;
+    const pending = state && state.items.some((i) => i.status === 'queued' || i.status === 'downloading');
+    box.classList.toggle('none', !next);
+    setText($('.ntitle', box), next ? next.title : pending ? 'Getting the next track ready…' : 'Queue empty');
+    setText($('.nartist', box), next ? next.artist : '');
+    setText($('#nbpm'), next && next.bpm ? (Math.round(next.bpm * 10) / 10).toFixed(1) : '—');
+    setText($('#nlen'), next && next.length_s ? mmss(next.length_s) : '—');
   }
   async function fetchQueue() {
-    try {
-      const rows = await (await fetch('/api/queue')).json();
-      const next = rows.filter((r) => r.status === 'selected' || r.status === 'downloaded').sort((a, b) => a.id - b.id)[0];
-      renderNext(next);
-    } catch (e) { /* keep what is shown */ }
+    try { renderNext(await (await fetch('/api/queue_items')).json()); } catch (e) { /* keep what is shown */ }
   }
 
   function take(state) { snap = state; rxAt = performance.now(); }
@@ -225,7 +223,7 @@
     es.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.event === 'traktor_state') take(m.state);
-      else if (m.event === 'download_complete' || m.event === 'download_failed') fetchQueue();
+      else if (m.event === 'queue_update' || m.event === 'download_complete' || m.event === 'download_failed') fetchQueue();
     };
   }
 
