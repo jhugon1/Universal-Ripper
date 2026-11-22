@@ -6,16 +6,12 @@ items, runs one or two at a time, retries the order prefixes of files that were 
 results. The outside world (YouTube lookup, yt-dlp) comes in through a `backend` object.
 """
 import asyncio
-import os
-import shutil
-import tempfile
 import time
 from pathlib import Path
 
 from starlette.concurrency import run_in_threadpool
 
-from filenames import track_basename
-from . import files, library, nml, rip, store
+from . import files, nml, rip, store
 
 MAX_ATTEMPTS = 2        # one retry
 CONCURRENCY = 2
@@ -50,34 +46,13 @@ def _attempt(conn, item_id, root, backend):
     item = store.get_item(conn, item_id)
     if not item or item["status"] != "downloading":
         return "removed"
-    entry = library.find(conn, item["video_id"])  # it may have arrived in the meantime
-    if entry is None:
-        entry = _download_into_library(conn, item, backend)
+    entry = rip.ensure_in_library(conn, backend, video_id=item["video_id"], artist=item["artist"], title=item["title"],
+                                  album=item["album"], thumbnail=item["thumbnail"])
     item = store.get_item(conn, item_id)  # the DJ may have removed it while it downloaded
     if item["status"] != "downloading":
         return "removed"  # the rip stays in the library; nothing is put into tonight's folder
     rip.link_item(conn, item, entry, root)
     return "ready"
-
-
-def _download_into_library(conn, item, backend):
-    tmp = Path(tempfile.mkdtemp(prefix="ripper_queue_"))
-    try:
-        audio = Path(backend.download(item["video_id"], tmp))
-        cover = files.fetch_cover(item["thumbnail"]) if item["thumbnail"] else None
-        files.tag_file(audio, title=item["title"], artist=item["artist"], album=item["album"], cover=cover,
-                       video_id=item["video_id"])
-        length = files.read_length(audio)
-        folder = library.library_dir()
-        folder.mkdir(parents=True, exist_ok=True)
-        target = files.free_path(folder / f"{track_basename(item['artist'], item['title'])}.mp3")
-        part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
-        shutil.copyfile(audio, part)
-        os.replace(part, target)
-        return library.add(conn, video_id=item["video_id"], artist=item["artist"], title=item["title"],
-                           album=item["album"], length_s=length, path=target)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)  # our own temp folder, never the library or the queue folder
 
 
 class QueueWorker:

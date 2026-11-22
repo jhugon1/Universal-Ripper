@@ -13,6 +13,7 @@ import yt_dlp
 import devreload
 from ripper_queue import files as queue_files
 from ripper_queue import library
+from ripper_queue import playlists as queue_playlists
 from ripper_queue import rip as queue_rip
 from ripper_queue import search as queue_search
 from ripper_queue import store as queue_store
@@ -22,6 +23,7 @@ from traktor.receiver import TraktorReceiver, configured_port
 from traktor.state import TraktorState, file_name_of
 import asyncio
 import json
+import uuid
 from fastapi.responses import StreamingResponse
 
 import subprocess
@@ -48,6 +50,8 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     init_db()
     await run_in_threadpool(prepare_library)
+    playlist_fetches.clear()  # a fresh start has no fetched playlists and no running job
+    playlist_job["job"] = None
     restore_traktor_state()
     print("Event loop captured for SSE")
     queue_worker.start()
@@ -351,6 +355,70 @@ def rip_track(video_id: str = Form(...), artist: str = Form(...), title: str = F
         notify({"event": "queue_update", "status": "added"})
     return JSONResponse({"kind": kind, "item": public_item(outcome["item"]), "message": outcome.get("message"),
                          "cover": f"/api/library/cover/{video_id}" if kind == "duplicate" else None})
+
+# ---- playlist rips: fetch a playlist link, then rip it (progress comes over SSE) ----
+playlist_fetches = {}   # fetch id -> fetched playlist (the last few), so ripping does not fetch it again
+playlist_job = {"job": None}
+
+
+@app.post("/api/playlist/fetch")
+def playlist_fetch(url: str = Form(...)):
+    """Name, track count, total length and destination folder of an Apple Music (or Spotify) playlist link."""
+    try:
+        result = queue_playlists.fetch_playlist(url)
+    except queue_playlists.PlaylistError as exc:
+        return JSONResponse({"message": str(exc)}, status_code=400)
+    fetch_id = uuid.uuid4().hex[:8]
+    playlist_fetches[fetch_id] = result
+    while len(playlist_fetches) > 10:
+        playlist_fetches.pop(next(iter(playlist_fetches)))
+    dest = queue_playlists.playlist_dir() / result["folder_name"]
+    existing = sum(1 for p in dest.glob("*.mp3")) if dest.is_dir() else 0
+    shown = {k: v for k, v in result.items() if k != "tracks"}
+    shown["tracks"] = [{k: t[k] for k in ("position", "artist", "title", "duration_s")} for t in result["tracks"]]
+    return JSONResponse({**shown, "fetch_id": fetch_id, "dest": str(dest), "existing": existing})
+
+
+async def run_playlist(job):
+    last = [0.0]
+
+    def progress(j):  # called from worker threads
+        now = time.monotonic()
+        if j.status == "running" and now - last[0] < 0.4:
+            return
+        last[0] = now
+        notify({"event": "playlist_progress", **j.snapshot()})
+
+    try:
+        await run_in_threadpool(queue_playlists.run_job, job, db_path=db_file(), backend=YtBackend(),
+                                yt_factory=get_ytmusic, on_progress=progress)
+    except Exception as exc:  # the job itself broke (not just one track)
+        job.status = "done"
+        job.problems.append(f"{type(exc).__name__}: {str(exc)[:120]}")
+    await broadcast({"event": "playlist_done", **job.snapshot()})
+
+
+@app.post("/api/playlist/rip")
+async def playlist_rip(fetch_id: str = Form(...)):
+    """Rip a fetched playlist into Playlist Rips/<Name> (<length>)/NN Artist - Title.mp3. If that folder exists it is
+    updated in place. Not added to tonight's queue."""
+    result = playlist_fetches.get(fetch_id)
+    if not result:
+        return JSONResponse({"message": "Fetch the playlist again first."}, status_code=404)
+    running = playlist_job["job"]
+    if running and running.status == "running":
+        return JSONResponse({"message": "A playlist is already being ripped.", **running.snapshot()}, status_code=409)
+    job = queue_playlists.PlaylistJob(result)
+    playlist_job["job"] = job
+    asyncio.create_task(run_playlist(job))
+    return JSONResponse(job.snapshot())
+
+
+@app.get("/api/playlist/job")
+async def playlist_job_state():
+    job = playlist_job["job"]
+    return JSONResponse(job.snapshot() if job else {"status": "idle"})
+
 
 @app.get("/api/library/cover/{video_id}")
 def library_cover(video_id: str):

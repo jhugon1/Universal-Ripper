@@ -8,12 +8,53 @@
 
 A hard link is used so the same file serves every folder (the copy fallback is in files.place_link).
 """
+import os
+import shutil
+import tempfile
+import threading
 import time
 from pathlib import Path
+
+from filenames import track_basename
 
 from . import files, library, store, sync
 
 LIVE = ("queued", "downloading", "ready")
+
+_locks = {}
+_locks_guard = threading.Lock()
+
+
+def video_lock(video_id):
+    """One lock per video id, so the same video is never downloaded twice at the same time (two playlist tracks
+    that resolve to one video, or a playlist and a search rip)."""
+    with _locks_guard:
+        return _locks.setdefault(video_id, threading.Lock())
+
+
+def ensure_in_library(conn, backend, *, video_id, artist, title, album=None, thumbnail=None):
+    """The library entry for this video: found, or downloaded ONCE into the library as `Artist - Title.mp3`,
+    tagged (title, artist, album, cover, video id)."""
+    with video_lock(video_id):
+        entry = library.find(conn, video_id)
+        if entry:
+            return entry
+        tmp = Path(tempfile.mkdtemp(prefix="ripper_queue_"))
+        try:
+            audio = Path(backend.download(video_id, tmp))
+            cover = files.fetch_cover(thumbnail) if thumbnail else None
+            files.tag_file(audio, title=title, artist=artist, album=album, cover=cover, video_id=video_id)
+            length = files.read_length(audio)
+            folder = library.library_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            target = files.free_path(folder / f"{track_basename(artist, title)}.mp3")
+            part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
+            shutil.copyfile(audio, part)
+            os.replace(part, target)
+            return library.add(conn, video_id=video_id, artist=artist, title=title, album=album, length_s=length,
+                               path=target)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)  # our own temp folder, never the library or the queue folder
 
 
 def live_item(conn, session_id, video_id):
