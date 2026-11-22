@@ -269,7 +269,7 @@ def client(tmp_path, monkeypatch, tone_mp3):
     FakeYT.fail_titles = set()
     monkeypatch.setattr(app_module, "get_ytmusic", lambda: FakeYT())
     monkeypatch.setattr(app_module, "YtBackend", lambda: backend)
-    monkeypatch.setattr(playlists, "fetch_playlist", lambda url: result_for("Hip-Hop", TRACKS))
+    monkeypatch.setattr(playlists, "fetch_playlist", lambda url, **kw: result_for("Hip-Hop", TRACKS))
     with TestClient(app_module.app) as c:
         yield c, app_module, backend
 
@@ -307,7 +307,7 @@ def test_fetch_then_rip_through_the_api(client, tmp_path):
 def test_api_errors_are_clear(client, monkeypatch):
     c, app_module, backend = client
     assert c.post("/api/playlist/rip", data={"fetch_id": "nope"}).status_code == 404
-    monkeypatch.setattr(playlists, "fetch_playlist", lambda url: (_ for _ in ()).throw(playlists.PlaylistError("Paste an Apple Music or Spotify playlist link.")))
+    monkeypatch.setattr(playlists, "fetch_playlist", lambda url, **kw: (_ for _ in ()).throw(playlists.PlaylistError("Paste an Apple Music or Spotify playlist link.")))
     bad = c.post("/api/playlist/fetch", data={"url": "https://example.com"})
     assert bad.status_code == 400 and "Paste" in bad.json()["message"]
     assert c.get("/api/playlist/job").json() == {"status": "idle"}

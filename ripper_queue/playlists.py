@@ -23,8 +23,7 @@ from filenames import clean_name, track_basename
 from . import files, rip, search, store
 
 APPLE_DATA = re.compile(r'<script type="application/json" id="serialized-server-data">(.*?)</script>', re.S)
-SPOTIFY_UNAVAILABLE = ("Spotify playlists cannot be read right now: Spotify refuses the shared access key the old app "
-                       "used (quota exceeded for 24 hours). Apple Music links work.")
+SPOTIFY_UNAVAILABLE = "Spotify is not set up in this app. Apple Music links work."
 
 
 class PlaylistError(Exception):
@@ -115,8 +114,9 @@ def _finish(service, parsed) -> dict:
             "truncated": bool(claimed and len(tracks) < claimed), "claimed_count": claimed}
 
 
-def fetch_playlist(url, urlopen=urllib.request.urlopen) -> dict:
-    """Name, tracks in order, total length and folder name for a playlist link."""
+def fetch_playlist(url, urlopen=urllib.request.urlopen, spotify=None) -> dict:
+    """Name, tracks in order, total length and folder name for a playlist link. `spotify(url)` reads a Spotify
+    playlist (it needs the user's own login, so the app supplies it)."""
     service = service_of(url)
     if service == "apple":
         request = urllib.request.Request(url.strip(), headers={"User-Agent": "Mozilla/5.0"})
@@ -127,7 +127,9 @@ def fetch_playlist(url, urlopen=urllib.request.urlopen) -> dict:
             raise PlaylistError(f"Could not open that Apple Music link ({type(exc).__name__}).") from exc
         return _finish("apple", parse_apple_page(html))
     if service == "spotify":
-        raise PlaylistError(SPOTIFY_UNAVAILABLE)
+        if spotify is None:
+            raise PlaylistError(SPOTIFY_UNAVAILABLE)
+        return _finish("spotify", spotify(url))
     raise PlaylistError("Paste an Apple Music or Spotify playlist link.")
 
 

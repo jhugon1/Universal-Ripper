@@ -15,6 +15,7 @@ from ripper_queue import files as queue_files
 from ripper_queue import library
 from ripper_queue import playlists as queue_playlists
 from ripper_queue import rip as queue_rip
+from ripper_queue import spotify as queue_spotify
 from ripper_queue import search as queue_search
 from ripper_queue import store as queue_store
 from ripper_queue import sync as queue_sync
@@ -23,7 +24,9 @@ from traktor.receiver import TraktorReceiver, configured_port
 from traktor.state import TraktorState, file_name_of
 import asyncio
 import json
+import re
 import uuid
+from html import escape as html_escape
 from fastapi.responses import StreamingResponse
 
 import subprocess
@@ -225,6 +228,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS traktor_state
                  (id INTEGER PRIMARY KEY CHECK (id = 1), saved_at REAL, data TEXT)''')
     queue_store.ensure_schema(conn)
+    conn.execute(queue_spotify.SCHEMA)
     conn.commit()
     conn.close()
 
@@ -361,13 +365,30 @@ playlist_fetches = {}   # fetch id -> fetched playlist (the last few), so rippin
 playlist_job = {"job": None}
 
 
+def spotify_client_id(conn):
+    """The user's Spotify Client ID: RIPPER_SPOTIFY_CLIENT_ID, or the one pasted into the page."""
+    return (os.environ.get("RIPPER_SPOTIFY_CLIENT_ID") or "").strip() or (queue_store.meta_get(conn, "spotify_client_id") or "").strip() or None
+
+
+def spotify_fetch(url):
+    """Read a Spotify playlist with the user's own login (raises SpotifyError saying what is missing)."""
+    conn = queue_store.open_db(db_file())
+    try:
+        token = queue_spotify.access_token(conn, spotify_client_id(conn), http=queue_spotify.http_json)
+    finally:
+        conn.close()
+    return queue_spotify.fetch_playlist(url, token, http=queue_spotify.http_json)
+
+
 @app.post("/api/playlist/fetch")
 def playlist_fetch(url: str = Form(...)):
-    """Name, track count, total length and destination folder of an Apple Music (or Spotify) playlist link."""
+    """Name, track count, total length and destination folder of an Apple Music or Spotify playlist link."""
     try:
-        result = queue_playlists.fetch_playlist(url)
+        result = queue_playlists.fetch_playlist(url, spotify=spotify_fetch)
     except queue_playlists.PlaylistError as exc:
         return JSONResponse({"message": str(exc)}, status_code=400)
+    except queue_spotify.SpotifyError as exc:  # `action` tells the page whether to offer setup or the login
+        return JSONResponse({"message": str(exc), "action": exc.action}, status_code=400)
     fetch_id = uuid.uuid4().hex[:8]
     playlist_fetches[fetch_id] = result
     while len(playlist_fetches) > 10:
@@ -377,6 +398,87 @@ def playlist_fetch(url: str = Form(...)):
     shown = {k: v for k, v in result.items() if k != "tracks"}
     shown["tracks"] = [{k: t[k] for k in ("position", "artist", "title", "duration_s")} for t in result["tracks"]]
     return JSONResponse({**shown, "fetch_id": fetch_id, "dest": str(dest), "existing": existing})
+
+
+spotify_pending = {}   # login state -> (code verifier, Client ID), until Spotify sends the user back
+
+
+def spotify_state():
+    conn = queue_store.open_db(db_file())
+    try:
+        cid = spotify_client_id(conn)
+        saved = queue_spotify.load_tokens(conn)
+    finally:
+        conn.close()
+    return {"client_id_set": bool(cid), "connected": bool(cid and saved and saved.get("refresh_token") and saved.get("client_id") == cid),
+            "redirect_uri": queue_spotify.redirect_uri()}
+
+
+@app.get("/api/spotify/status")
+def spotify_status():
+    return JSONResponse(spotify_state())
+
+
+@app.post("/api/spotify/client_id")
+def spotify_set_client_id(client_id: str = Form(...)):
+    client_id = client_id.strip()
+    if not re.fullmatch(r"[A-Za-z0-9]{20,64}", client_id):
+        return JSONResponse({"message": "That does not look like a Spotify Client ID (letters and digits, about 32 characters)."}, status_code=400)
+    conn = queue_store.open_db(db_file())
+    try:
+        queue_store.meta_set(conn, "spotify_client_id", client_id)
+    finally:
+        conn.close()
+    return JSONResponse(spotify_state())
+
+
+@app.get("/api/spotify/login")
+def spotify_login():
+    """Send the browser to Spotify's one-time login. It comes back to /api/spotify/callback."""
+    conn = queue_store.open_db(db_file())
+    try:
+        cid = spotify_client_id(conn)
+    finally:
+        conn.close()
+    if not cid:
+        return JSONResponse({"message": "Add your Spotify Client ID first.", "action": "setup"}, status_code=400)
+    verifier, state = queue_spotify.new_verifier(), uuid.uuid4().hex
+    spotify_pending[state] = (verifier, cid)
+    while len(spotify_pending) > 5:
+        spotify_pending.pop(next(iter(spotify_pending)))
+    return RedirectResponse(queue_spotify.authorize_url(cid, queue_spotify.redirect_uri(), state, queue_spotify.code_challenge(verifier)))
+
+
+@app.get("/api/spotify/callback", response_class=HTMLResponse)
+def spotify_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    pending = spotify_pending.pop(state or "", None)
+    if error or not code or not pending:
+        message, ok = f"Spotify did not connect ({error or 'the login expired'}). Close this window and try again.", False
+    else:
+        conn = queue_store.open_db(db_file())
+        try:
+            queue_spotify.exchange_code(conn, pending[1], code, pending[0], queue_spotify.redirect_uri(), http=queue_spotify.http_json)
+            message, ok = "Spotify is connected. You can close this window.", True
+        except queue_spotify.SpotifyError as exc:
+            message, ok = f"{exc} Close this window and try again.", False
+        finally:
+            conn.close()
+    if ok:
+        notify({"event": "spotify_connected"})
+    page = ('<!doctype html><meta charset="utf-8"><title>Spotify</title><body style="margin:0;background:#0E0F12;color:#ECEDEE;'
+            'font:18px Inter,system-ui,sans-serif;display:grid;place-items:center;height:100vh">'
+            f'<p style="max-width:420px;text-align:center">{html_escape(message)}</p></body>')
+    return HTMLResponse(page, status_code=200 if ok else 400)
+
+
+@app.post("/api/spotify/disconnect")
+def spotify_disconnect():
+    conn = queue_store.open_db(db_file())
+    try:
+        queue_spotify.forget_tokens(conn)
+    finally:
+        conn.close()
+    return JSONResponse(spotify_state())
 
 
 async def run_playlist(job):
