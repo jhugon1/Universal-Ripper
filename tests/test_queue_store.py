@@ -114,3 +114,33 @@ def test_folder_hint_until_acknowledged(db):
     assert store.folder_state(db)["reselect_needed"] is False
     store.mark_folder_changed(db, now=102.0)
     assert store.folder_state(db)["reselect_needed"] is True
+
+
+def test_an_older_database_gets_the_new_columns_and_keeps_its_rows(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, "
+                "started_at REAL NOT NULL, ended_at REAL)")
+    old.execute("CREATE TABLE queue_items (id INTEGER PRIMARY KEY AUTOINCREMENT, playlist TEXT NOT NULL DEFAULT 'Ripper Queue', "
+                "session_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL, request_id INTEGER, query TEXT, "
+                "artist TEXT, title TEXT, video_id TEXT, status TEXT NOT NULL DEFAULT 'queued', file_path TEXT, length_s REAL, "
+                "bpm REAL, error TEXT, added_at REAL NOT NULL, loaded_at REAL, played_at REAL, marker_position INTEGER)")
+    old.execute("INSERT INTO sessions (name, started_at) VALUES ('2026-11-21', 1.0)")
+    old.execute("INSERT INTO queue_items (session_id, position, source, artist, title, status, file_path, added_at) "
+                "VALUES (1, 1, 'dj', 'Old Artist', 'Old Title', 'loaded', 'C:\\x\\001 a.mp3', 2.0)")
+    old.commit()
+    old.close()
+
+    conn = store.open_db(path)
+    store.ensure_schema(conn)
+    store.ensure_schema(conn)  # running it twice is harmless
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(queue_items)")}
+    assert {"album", "thumbnail", "library_id"} <= columns
+    row = store.get_item(conn, 1)
+    assert (row["artist"], row["title"], row["status"], row["album"]) == ("Old Artist", "Old Title", "loaded", None)
+    assert conn.execute("SELECT COUNT(*) FROM library").fetchone()[0] == 0  # the new table exists too
+    item, _ = store.add_item(conn, source="rip", artist="New", title="One", video_id="v", album="LP", thumbnail="t")
+    assert item["position"] == 2 and item["album"] == "LP"
+    conn.close()
