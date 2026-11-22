@@ -145,8 +145,9 @@ def test_played_tracks_are_listed_in_the_order_they_were_loaded(db, st):
     sync.apply_sync(db, st.decks, 100.0)
     load(st, "A", ROOT + "1.mp3")
     sync.apply_sync(db, st.decks, 200.0)
-    assert [i["id"] for i in store.list_played(db, session["id"])] == [c["id"], a["id"]]
-    assert [i["id"] for i in store.list_items(db, session["id"]) if i["status"] == "ready"] == [b["id"]]
+    queue, played = store.split_queue(store.list_items(db, session["id"]))
+    assert [i["id"] for i in played] == [c["id"], a["id"]] and [i["id"] for i in queue] == [b["id"]]
+    assert {i["id"] for i in queue}.isdisjoint(i["id"] for i in played)  # never in both
 
 
 def test_a_played_track_keeps_its_place_when_the_rest_is_reordered(db, st):

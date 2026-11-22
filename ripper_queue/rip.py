@@ -11,7 +11,7 @@ A hard link is used so the same file serves every folder (the copy fallback is i
 import time
 from pathlib import Path
 
-from . import files, library, store
+from . import files, library, store, sync
 
 LIVE = ("queued", "downloading", "ready")
 
@@ -50,3 +50,46 @@ def request_rip(conn, *, video_id, artist, title, album=None, thumbnail=None, ro
     except OSError as exc:  # neither a link nor a copy could be made
         store.update_item(conn, item["id"], status="failed", error=f"{type(exc).__name__}: {exc}"[:300])
         return {"kind": "error", "item": store.get_item(conn, item["id"]), "message": str(exc)}
+
+
+def remove_from_queue(conn, item_id, decks, queue_root, now=None) -> dict:
+    """Take an item out of tonight's queue. If it was never loaded, its link in tonight's folder is deleted too
+    (the library file is never touched: for a hard link only the extra name goes away). Played items are never
+    touched. A track loaded onto a deck a moment ago, before the sync has noticed, is marked played instead of
+    being removed. Returns {"error": ...} or {"result": "removed" | "kept" | "unchanged", ...}."""
+    now = time.time() if now is None else now
+    item = store.get_item(conn, item_id)
+    if not item:
+        return {"error": "no such item"}
+    if item["status"] == "removed":
+        return {"result": "unchanged"}
+    if item["status"] in store.LOCKED:
+        return {"result": "kept", "reason": "played"}
+    updates = sync.compute_updates([item], decks, now)
+    if item_id in updates:  # it is on a deck right now
+        store.update_item(conn, item_id, **updates[item_id])
+        return {"result": "kept", "reason": "loaded"}
+    store.update_item(conn, item_id, status="removed")
+    out = {"result": "removed", "deleted": False}
+    if item["status"] == "ready" and item["file_path"]:
+        out["deleted"] = _delete_link(conn, item, queue_root)
+    return out
+
+
+def _delete_link(conn, item, queue_root) -> bool:
+    """Delete this item's own link (or copy) in tonight's folder. Only ever a file inside the queue folder that is
+    not the library file itself. A failure is noted on the item and nothing else changes."""
+    path = Path(item["file_path"])
+    entry = library.get(conn, item["library_id"]) if item["library_id"] else None
+    if (not files.is_inside(path, queue_root) or files.is_inside(path, library.library_dir())
+            or (entry and files.normalize_path(entry["path"]) == files.normalize_path(path))):
+        return False
+    if not path.is_file():
+        return False
+    try:
+        path.unlink()
+    except OSError as exc:  # for example Traktor has it open: leave it, say so
+        store.update_item(conn, item["id"], error=f"Could not delete the file: {type(exc).__name__}")
+        return False
+    store.mark_folder_changed(conn)
+    return True

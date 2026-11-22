@@ -303,13 +303,12 @@ def queue_state(conn):
     played tonight; and whether Traktor needs the folder re-selected. A played track leaves the queue here only:
     its file stays in tonight's folder."""
     session = queue_store.current_session(conn)
-    items = queue_store.list_items(conn, session["id"])
-    queue = [i for i in items if i["status"] != "played"]
+    queue, played = queue_store.split_queue(queue_store.list_items(conn, session["id"]))
     return {
         "session": session,
         "items": [public_item(i) for i in queue],
         "to_play": sum(1 for i in queue if i["status"] in ("queued", "downloading", "ready")),
-        "played": [public_item(i) for i in queue_store.list_played(conn, session["id"])],
+        "played": [public_item(i) for i in played],
         "folder": queue_store.folder_state(conn),
     }
 
@@ -399,11 +398,10 @@ def move_queue_item(id: int = Form(...), direction: str = Form(...)):
 @app.post("/api/queue_items/remove")
 def remove_queue_item(id: int = Form(...)):
     def act(conn):
-        item = queue_store.get_item(conn, id)
-        if not item:
-            return "no such item"
-        if item["status"] != "removed":  # the file, if any, stays where it is: Traktor may have it loaded
-            queue_store.update_item(conn, id, status="removed")
+        # the decks are copied here so a track loaded a moment ago is never deleted before the sync notices it
+        decks = {k: dict(v) for k, v in traktor_state.decks.items()}
+        result = queue_rip.remove_from_queue(conn, id, decks, queue_store.queue_dir())
+        return result.get("error")
     return queue_action(act, changed=True)
 
 @app.post("/api/queue_items/retry")

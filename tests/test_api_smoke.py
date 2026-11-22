@@ -198,8 +198,8 @@ def test_ripping_the_same_video_again(client, tmp_path):
     assert FakeYDL.downloads == ["vid00000001"]  # downloaded exactly once
     assert library_names(tmp_path) == ["Artist 1 - Song 1.mp3"]
     names = folder_names(c, tmp_path)
-    assert names == ["001 Artist 1 - Song 1.mp3", "002 Artist 1 - Song 1.mp3"]
-    assert os.path.samefile(tmp_path / "Library" / "Artist 1 - Song 1.mp3", session_folder(c, tmp_path) / names[1])
+    assert names == ["002 Artist 1 - Song 1.mp3"]  # the first link was deleted when it was removed from the queue
+    assert os.path.samefile(tmp_path / "Library" / "Artist 1 - Song 1.mp3", session_folder(c, tmp_path) / names[0])
 
 
 def test_a_different_version_is_a_different_rip(client, tmp_path):
@@ -291,15 +291,86 @@ def test_reordering_renames_tonights_links_and_never_the_library(client, tmp_pat
     assert c.post("/api/queue_items/move", data={"id": 999, "direction": "up"}).status_code == 404
 
 
-def test_remove_never_touches_any_file(client, tmp_path):
+def test_removing_an_unloaded_item_deletes_its_link_but_never_the_library_file(client, tmp_path):
     c, _ = client
     a, b = rip_ready(c, 1, 2)
-    before, library_before = folder_names(c, tmp_path), library_names(tmp_path)
+    library_file = tmp_path / "Library" / "Artist 1 - Song 1.mp3"
+    assert os.stat(library_file).st_nlink == 2  # the library name and tonight's name
     state = post(c, "remove", id=a["id"])
     assert [i["artist"] for i in state["items"]] == ["Artist 2"]
-    assert folder_names(c, tmp_path) == before and library_names(tmp_path) == library_before
+    assert folder_names(c, tmp_path) == ["002 Artist 2 - Song 2.mp3"]  # its link is gone
+    assert library_file.is_file() and os.stat(library_file).st_nlink == 1  # the library file is untouched
+    assert library_names(tmp_path) == ["Artist 1 - Song 1.mp3", "Artist 2 - Song 2.mp3"]
+    assert state["folder"]["reselect_needed"] is True
     assert post(c, "remove", id=a["id"])["items"] == state["items"]  # removing twice is harmless
     assert c.post("/api/queue_items/remove", data={"id": 999}).status_code == 404
+    assert rip(c, 1)["kind"] == "duplicate"  # and it can be linked again without downloading
+
+
+def test_removing_a_copy_deletes_the_copy(client, tmp_path, monkeypatch):
+    from ripper_queue import files as queue_files
+
+    c, _ = client
+    real_link = os.link
+    monkeypatch.setattr(queue_files.os, "link", lambda *a: (_ for _ in ()).throw(OSError("no links")))
+    first, = rip_ready(c, 1)
+    monkeypatch.setattr(queue_files.os, "link", real_link)  # links work again from here
+    post(c, "remove", id=first["id"])
+    assert folder_names(c, tmp_path) == [] and library_names(tmp_path) == ["Artist 1 - Song 1.mp3"]
+
+
+def test_removing_never_touches_a_played_track(client, tmp_path):
+    c, app_module = client
+    a, b = rip_ready(c, 1, 2)
+    path = session_folder(c, tmp_path) / a["file_name"]
+    conn = sqlite3.connect(tmp_path / "test.db")
+    conn.execute("UPDATE queue_items SET status = 'played' WHERE id = ?", (a["id"],))
+    conn.commit()
+    conn.close()
+    before = path.read_bytes()
+    post(c, "remove", id=a["id"])
+    assert path.read_bytes() == before and folder_names(c, tmp_path) == ["001 Artist 1 - Song 1.mp3", "002 Artist 2 - Song 2.mp3"]
+    assert [i["artist"] for i in c.get("/api/queue_items").json()["played"]] == ["Artist 1"]  # still played
+
+
+def test_a_track_that_was_just_loaded_is_not_deleted_before_the_sync_notices(client, tmp_path):
+    c, app_module = client
+    a, b = rip_ready(c, 1, 2)
+    path = session_folder(c, tmp_path) / a["file_name"]
+    app_module.traktor_state.apply("/deckLoaded/A", {"filePath": str(path), "title": "x", "trackLength": 100.0})
+    state = post(c, "remove", id=a["id"])  # the DJ pressed remove just as the track went onto the deck
+    assert path.is_file() and [i["artist"] for i in state["played"]] == ["Artist 1"]
+    assert [i["artist"] for i in state["items"]] == ["Artist 2"]
+
+
+def test_a_link_that_cannot_be_deleted_stays_and_is_noted(client, tmp_path, monkeypatch):
+    from pathlib import Path as P
+
+    c, _ = client
+    first, = rip_ready(c, 1)
+    real_unlink = P.unlink
+    monkeypatch.setattr(P, "unlink", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError("in use")))
+    state = post(c, "remove", id=first["id"])
+    monkeypatch.setattr(P, "unlink", real_unlink)
+    assert state["items"] == [] and folder_names(c, tmp_path) == ["001 Artist 1 - Song 1.mp3"]  # removed from the queue, file left
+    conn = sqlite3.connect(tmp_path / "test.db")
+    assert "Could not delete" in conn.execute("SELECT error FROM queue_items WHERE id = ?", (first["id"],)).fetchone()[0]
+    conn.close()
+
+
+def test_only_the_items_own_link_inside_the_queue_folder_is_ever_deleted(client, tmp_path):
+    c, _ = client
+    first, = rip_ready(c, 1)
+    library_file = tmp_path / "Library" / "Artist 1 - Song 1.mp3"
+    elsewhere = tmp_path / "elsewhere.mp3"
+    shutil.copy(library_file, elsewhere)
+    conn = sqlite3.connect(tmp_path / "test.db")
+    for bad in (elsewhere, library_file):  # a path outside the queue folder, and the library file itself
+        conn.execute("UPDATE queue_items SET status = 'ready', file_path = ? WHERE id = ?", (str(bad), first["id"]))
+        conn.commit()
+        post(c, "remove", id=first["id"])
+        assert bad.is_file()
+    conn.close()
 
 
 def test_new_night_starts_a_new_folder_and_numbering(client, tmp_path):

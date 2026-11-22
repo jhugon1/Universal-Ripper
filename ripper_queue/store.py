@@ -123,10 +123,13 @@ def add_item(conn, *, source, artist, title, query=None, video_id=None, album=No
     return get_item(conn, cur.lastrowid), True
 
 
-def list_played(conn, session_id):
-    """Tonight's tracks that were loaded onto a deck, in the order they were loaded."""
-    return [dict(r) for r in conn.execute("SELECT * FROM queue_items WHERE session_id = ? AND status = 'played' "
-                                          "ORDER BY played_at, id", (session_id,))]
+def split_queue(items):
+    """(queue, played) from ONE list of items, so a track that is marked played at this very moment is in exactly
+    one of them. The queue is what is still to play (plus failed rips) in order; played is in the order the
+    tracks were loaded."""
+    queue = [i for i in items if i["status"] != "played"]
+    played = sorted((i for i in items if i["status"] == "played"), key=lambda i: (i["played_at"] or 0, i["id"]))
+    return queue, played
 
 
 def update_item(conn, item_id, **fields):
