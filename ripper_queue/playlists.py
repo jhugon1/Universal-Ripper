@@ -110,8 +110,9 @@ def _finish(service, parsed) -> dict:
     return {"service": service, "name": parsed["name"], "tracks": tracks, "count": len(tracks),
             "total_s": total if known else None, "length_label": length_label(total) if known else "?",
             "folder_name": folder_name(parsed["name"], total if known else None),
-            # the page showed fewer tracks than the playlist has (Apple loads the rest on scroll)
-            "truncated": bool(claimed and len(tracks) < claimed), "claimed_count": claimed}
+            # the source showed fewer tracks than the playlist has (Apple loads the rest on scroll; Spotify's
+            # embed page stops at 100)
+            "truncated": bool(claimed and len(tracks) < claimed) or bool(parsed.get("maybe_truncated")), "claimed_count": claimed}
 
 
 def fetch_playlist(url, urlopen=urllib.request.urlopen, spotify=None) -> dict:

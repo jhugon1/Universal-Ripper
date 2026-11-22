@@ -365,13 +365,24 @@ def spotify_client_id(conn):
 
 
 def spotify_fetch(url):
-    """Read a Spotify playlist with the user's own login (raises SpotifyError saying what is missing)."""
+    """Read a Spotify playlist. With the user's own Spotify app connected: through the API (private playlists too).
+    Otherwise through the public embed page (public playlists only, first 100 tracks), no setup needed."""
     conn = queue_store.open_db(db_file())
     try:
-        token = queue_spotify.access_token(conn, spotify_client_id(conn), http=queue_spotify.http_json)
+        cid = spotify_client_id(conn)
+        saved = queue_spotify.load_tokens(conn)
+        connected = bool(cid and saved and saved.get("refresh_token") and saved.get("client_id") == cid)
+        token = queue_spotify.access_token(conn, cid, http=queue_spotify.http_json) if connected else None
     finally:
         conn.close()
-    return queue_spotify.fetch_playlist(url, token, http=queue_spotify.http_json)
+    if connected:
+        return queue_spotify.fetch_playlist(url, token, http=queue_spotify.http_json)
+    try:
+        return queue_spotify.fetch_embed(url)
+    except queue_spotify.SpotifyError as exc:
+        if exc.action is None and "public" in str(exc):  # a private playlist: offer the way to read it
+            exc.action = "login" if cid else "setup"
+        raise
 
 
 @app.post("/api/playlist/fetch")

@@ -5,6 +5,10 @@ playlists can only be read with the user's permission anyway. So the user makes 
 and logs in once in the browser (authorization code flow with PKCE: no client secret is needed). The tokens
 are kept in the local database and refreshed automatically.
 
+Without any setup there is a second, weaker route: Spotify's public embed page (`fetch_embed`) lists the name
+and the first 100 tracks of a PUBLIC playlist without a login. The app uses it whenever the user has not
+connected their own Spotify app.
+
 Setup (done by the user, see the report): create an app at developer.spotify.com/dashboard with the redirect
 URI shown by `redirect_uri()` (Spotify requires the 127.0.0.1 form, not "localhost"), then give the app its
 Client ID (RIPPER_SPOTIFY_CLIENT_ID, or the box on the page).
@@ -24,6 +28,10 @@ AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
 SCOPES = "playlist-read-private playlist-read-collaborative"
+EMBED_URL = "https://open.spotify.com/embed/playlist/"
+EMBED_CAP = 100  # the embed page lists at most this many tracks
+NOT_PUBLIC = ("Spotify only shows public playlists without a login. Make this playlist public in Spotify for a moment "
+              "(or add your own Spotify app below), then fetch it again.")
 SCHEMA = """CREATE TABLE IF NOT EXISTS spotify_auth
             (id INTEGER PRIMARY KEY CHECK (id = 1), client_id TEXT, access_token TEXT, refresh_token TEXT, expires_at REAL)"""
 _ID = r"([A-Za-z0-9]{22})"
@@ -184,3 +192,56 @@ def fetch_playlist(url, token, http=http_json) -> dict:
         raise SpotifyError("No tracks that can be ripped were found in that playlist.")
     return {"name": head.get("name") or "Spotify Playlist", "tracks": tracks,
             "claimed_count": total - skipped if isinstance(total, int) else None, "skipped": skipped}
+
+
+def _find(obj, key):
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for value in obj.values():
+            found = _find(value, key)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find(value, key)
+            if found is not None:
+                return found
+    return None
+
+
+def fetch_embed(url, urlopen=urllib.request.urlopen) -> dict:
+    """Name and tracks of a PUBLIC playlist from Spotify's embed page, no login needed. Only the first
+    EMBED_CAP tracks are listed, so `maybe_truncated` is set when the list is that long."""
+    pid = playlist_id(url)
+    if not pid:
+        raise SpotifyError("That is not a Spotify playlist link.")
+    request = urllib.request.Request(EMBED_URL + pid, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(request, timeout=30) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        raise SpotifyError(NOT_PUBLIC if exc.code in (403, 404) else f"Spotify answered with an error ({exc.code}).") from exc
+    except OSError as exc:
+        raise SpotifyError(f"Could not reach Spotify ({type(exc).__name__}).") from exc
+    match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.S)
+    try:
+        entity = _find(json.loads(match.group(1)), "entity") if match else None
+    except ValueError:
+        entity = None
+    listed = (entity or {}).get("trackList") or []
+    tracks = []
+    for item in listed:
+        title = (item.get("title") or "").replace("\xa0", " ").strip()
+        if not title:
+            continue
+        try:
+            seconds = float(item.get("duration")) / 1000.0
+        except (TypeError, ValueError):
+            seconds = None
+        tracks.append({"position": len(tracks) + 1, "artist": (item.get("subtitle") or "").replace("\xa0", " ").strip() or "Unknown Artist",
+                       "title": title, "album": None, "duration_s": seconds})
+    if not tracks:
+        raise SpotifyError(NOT_PUBLIC)
+    return {"name": (entity.get("name") or entity.get("title") or "Spotify Playlist"), "tracks": tracks,
+            "claimed_count": None, "skipped": 0, "maybe_truncated": len(listed) >= EMBED_CAP}

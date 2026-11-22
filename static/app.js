@@ -338,11 +338,11 @@
     if (data.action === 'setup') {
       const s = await api('/api/spotify/status');
       const uri = s.data.redirect_uri || 'http://127.0.0.1:8000/api/spotify/callback';
-      setStatus('Spotify needs your app’s Client ID (developer.spotify.com/dashboard).', true,
-        'Create a free app there, add the redirect URI ' + uri + ', then paste its Client ID here.');
+      setStatus(message, true, message + ' To read private playlists: create a free app at developer.spotify.com/dashboard, add the redirect URI '
+        + uri + ', then paste its Client ID here.');
       $('#spotify-id-form').hidden = false; $('#spotify-id').focus();
     } else if (data.action === 'login') {
-      setStatus('Connect Spotify once to read your playlists.', true);
+      setStatus(message, true, message);
       $('#spotify-connect').hidden = false;
     } else {
       setStatus(message, true, message);

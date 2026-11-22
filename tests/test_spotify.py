@@ -209,13 +209,14 @@ def test_setup_login_and_fetch_through_the_app(client, monkeypatch):
     c, app_module = client
     assert c.get("/api/spotify/status").json() == {"client_id_set": False, "connected": False,
                                                     "redirect_uri": "http://127.0.0.1:8000/api/spotify/callback"}
-    # no Client ID yet: the page is told to offer setup
+    # no Client ID yet and the playlist is not public: the page is told to offer setup
+    monkeypatch.setattr(spotify, "fetch_embed", lambda url: (_ for _ in ()).throw(spotify.SpotifyError(spotify.NOT_PUBLIC)))
     blocked = c.post("/api/playlist/fetch", data={"url": f"https://open.spotify.com/playlist/{PID}"})
-    assert blocked.status_code == 400 and blocked.json()["action"] == "setup"
+    assert blocked.status_code == 400 and blocked.json()["action"] == "setup" and "public" in blocked.json()["message"]
     assert c.get("/api/spotify/login").status_code == 400
     assert c.post("/api/spotify/client_id", data={"client_id": "not a client id"}).status_code == 400
     assert c.post("/api/spotify/client_id", data={"client_id": CID}).json()["client_id_set"] is True
-    # a Client ID but no login yet: the page is told to offer the login
+    # a Client ID but no login yet (and still not public): the page is told to offer the login
     needs_login = c.post("/api/playlist/fetch", data={"url": f"https://open.spotify.com/playlist/{PID}"}).json()
     assert needs_login["action"] == "login"
 
@@ -243,3 +244,87 @@ def test_the_callback_page_does_not_echo_markup(client):
     c, _ = client
     page = c.get("/api/spotify/callback", params={"error": "<script>alert(1)</script>"})
     assert page.status_code == 400 and "<script>" not in page.text and "&lt;script&gt;" in page.text
+
+
+# ---- the no-setup route: the public embed page ----------------------------------------------------
+def embed_page(entity):
+    data = {"props": {"pageProps": {"state": {"data": {"entity": entity}}}}}
+    return f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script></html>'
+
+
+class Page:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self.body.encode()
+
+
+def embed_tracks(n):
+    return [{"title": f"Song {i}", "subtitle": f"Band\xa0{i}", "duration": 180000 + i * 1000, "isPlayable": True} for i in range(1, n + 1)]
+
+
+import json  # noqa: E402
+
+
+def test_the_embed_page_gives_name_order_artists_and_durations():
+    page = embed_page({"name": "playlist of doom", "trackList": embed_tracks(3)})
+    got = spotify.fetch_embed(f"https://open.spotify.com/playlist/{PID}", urlopen=lambda req, timeout=0: Page(page))
+    assert got["name"] == "playlist of doom" and [t["title"] for t in got["tracks"]] == ["Song 1", "Song 2", "Song 3"]
+    assert got["tracks"][0] == {"position": 1, "artist": "Band 1", "title": "Song 1", "album": None, "duration_s": 181.0}
+    assert got["maybe_truncated"] is False
+    result = playlists.fetch_playlist(f"https://open.spotify.com/playlist/{PID}", spotify=lambda url: got)
+    assert result["count"] == 3 and result["truncated"] is False
+
+
+def test_a_hundred_tracks_means_the_list_may_be_cut_off():
+    page = embed_page({"name": "Big", "trackList": embed_tracks(100)})
+    got = spotify.fetch_embed(f"spotify:playlist:{PID}", urlopen=lambda req, timeout=0: Page(page))
+    assert got["maybe_truncated"] is True
+    assert playlists.fetch_playlist(f"https://open.spotify.com/playlist/{PID}", spotify=lambda url: got)["truncated"] is True
+
+
+def test_a_private_or_unreadable_playlist_gets_a_clear_message():
+    import io
+    import urllib.error
+
+    def refuse(code):
+        def opener(req, timeout=0):
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(b""))
+        return opener
+
+    link = f"https://open.spotify.com/playlist/{PID}"
+    for opener in (refuse(404), refuse(403), lambda req, timeout=0: Page("<html>no data</html>"),
+                   lambda req, timeout=0: Page(embed_page({"name": "x", "trackList": []}))):
+        with pytest.raises(spotify.SpotifyError, match="public"):
+            spotify.fetch_embed(link, urlopen=opener)
+    with pytest.raises(spotify.SpotifyError, match="error \\(500\\)"):
+        spotify.fetch_embed(link, urlopen=refuse(500))
+    with pytest.raises(spotify.SpotifyError, match="not a Spotify"):
+        spotify.fetch_embed("https://example.com", urlopen=refuse(404))
+
+
+def test_the_app_uses_the_embed_page_until_the_user_connects_their_own_app(client, monkeypatch):
+    c, app_module = client
+    used = []
+    monkeypatch.setattr(spotify, "fetch_embed", lambda url: used.append("embed") or {"name": "Public Mix", "tracks": [
+        {"position": 1, "artist": "A", "title": "T", "album": None, "duration_s": 100.0}], "claimed_count": None, "skipped": 0,
+        "maybe_truncated": False})
+    got = c.post("/api/playlist/fetch", data={"url": f"https://open.spotify.com/playlist/{PID}"}).json()
+    assert got["name"] == "Public Mix" and used == ["embed"]  # works with no setup at all
+
+    http = FakeHttp({"/api/token": (200, {"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}),
+                     f"/playlists/{PID}/tracks": (200, {"items": [track(1)], "next": None, "total": 1}),
+                     f"/playlists/{PID}?": (200, {"name": "Private Mix", "tracks": {"total": 1}})})
+    monkeypatch.setattr(spotify, "http_json", http)
+    c.post("/api/spotify/client_id", data={"client_id": CID})
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(c.get("/api/spotify/login").headers["location"]).query)["state"][0]
+    c.get("/api/spotify/callback", params={"code": "c", "state": state})
+    got = c.post("/api/playlist/fetch", data={"url": f"https://open.spotify.com/playlist/{PID}"}).json()
+    assert got["name"] == "Private Mix" and used == ["embed"]  # connected: the API, not the embed page
