@@ -12,7 +12,7 @@ DEFAULT_PLAYLIST = "Ripper Queue"
 # Items that may change position, and whose file (if it exists yet) may be renamed.
 MOVABLE = ("queued", "downloading", "ready")
 # Traktor records the paths of loaded tracks in its collection: never rename these.
-LOCKED = ("loaded", "played")
+LOCKED = ("loaded", "played")  # ("loaded" is no longer used: loading a track makes it "played")
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS sessions
@@ -123,11 +123,10 @@ def add_item(conn, *, source, artist, title, query=None, video_id=None, album=No
     return get_item(conn, cur.lastrowid), True
 
 
-def up_next(conn, session_id):
-    """The lowest-position item that is ready (downloaded, not yet loaded or played)."""
-    row = conn.execute("SELECT * FROM queue_items WHERE session_id = ? AND status = 'ready' "
-                       "ORDER BY position, id LIMIT 1", (session_id,)).fetchone()
-    return dict(row) if row else None
+def list_played(conn, session_id):
+    """Tonight's tracks that were loaded onto a deck, in the order they were loaded."""
+    return [dict(r) for r in conn.execute("SELECT * FROM queue_items WHERE session_id = ? AND status = 'played' "
+                                          "ORDER BY played_at, id", (session_id,))]
 
 
 def update_item(conn, item_id, **fields):

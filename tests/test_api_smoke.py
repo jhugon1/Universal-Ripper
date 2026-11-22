@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import threading
 import time
@@ -332,3 +333,71 @@ def test_printing_a_non_latin_title_cannot_break_the_app(monkeypatch):
     app_module.make_console_safe()
     print("Broadcasting event:", {"query": "日本語 \U0001f3a7"})
     assert b"Broadcasting event:" in raw.getvalue()
+
+
+# ---- Traktor loading a track takes it out of the queue panel, not out of the folder ------------
+@pytest.fixture
+def traktor_port(monkeypatch):
+    """Turn the app's Traktor receiver on, on a free port. Request this fixture BEFORE `client`."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("RIPPER_TRAKTOR_PORT", str(port))
+    return port
+
+
+def test_loading_a_track_in_traktor_moves_it_to_played_tonight_but_leaves_the_file(traktor_port, client, tmp_path):
+    import httpx
+
+    c, app_module = client
+    http = httpx.Client(trust_env=False, timeout=2)
+    base = f"http://127.0.0.1:{traktor_port}"
+    first, second, third = rip_ready(c, 1, 2, 3)
+    state = c.get("/api/queue_items").json()
+    assert state["to_play"] == 3 and state["played"] == []
+    folder_before = folder_names(c, tmp_path)
+    paths = {n: str(session_folder(c, tmp_path) / name) for n, name in enumerate(folder_before, 1)}
+
+    def send(kind, body):
+        for _ in range(50):  # the receiver starts in the background
+            try:
+                return http.post(f"{base}/{kind}", json=body)
+            except httpx.TransportError:
+                time.sleep(0.1)
+        raise AssertionError("receiver did not start")
+
+    # Traktor reports the tonight link in its own spelling, with a BPM
+    send("deckLoaded/A", {"filePath": paths[1].replace("\\", "/").upper(), "title": "x", "bpm": 126.4, "trackLength": 200.0})
+    state = wait_for(lambda: (lambda s: s if s["played"] else None)(c.get("/api/queue_items").json()))
+    assert [i["title"] for i in state["played"]] == ["Song 1"] and state["played"][0]["bpm"] == 126.4
+    assert [i["title"] for i in state["items"]] == ["Song 2", "Song 3"] and state["to_play"] == 2
+    assert folder_names(c, tmp_path) == folder_before  # the played track's file is still in tonight's folder
+
+    # loading the LIBRARY copy of track 3 (the same file as tonight's link) counts as well
+    send("deckLoaded/B", {"filePath": str(tmp_path / "Library" / "Artist 3 - Song 3.mp3"), "title": "y", "bpm": 120.0, "trackLength": 100.0})
+    state = wait_for(lambda: (lambda s: s if len(s["played"]) == 2 else None)(c.get("/api/queue_items").json()))
+    assert [i["title"] for i in state["played"]] == ["Song 1", "Song 3"] and [i["title"] for i in state["items"]] == ["Song 2"]
+    send("deckLoaded/A", {"filePath": ""})  # ejecting changes nothing
+    time.sleep(0.6)
+    assert len(c.get("/api/queue_items").json()["played"]) == 2 and folder_names(c, tmp_path) == folder_before
+    # a played track no longer moves, and the rest can still be reordered around it
+    assert post(c, "move", id=second["id"], direction="down")["items"][0]["title"] == "Song 2"
+    assert folder_names(c, tmp_path) == folder_before
+
+
+def test_resetting_the_decks_does_not_undo_played(traktor_port, client, tmp_path):
+    import httpx
+
+    c, app_module = client
+    first, = rip_ready(c, 1)
+    path = str(session_folder(c, tmp_path) / first["file_name"])
+    http = httpx.Client(trust_env=False, timeout=2)
+    for _ in range(50):
+        try:
+            http.post(f"http://127.0.0.1:{traktor_port}/deckLoaded/A", json={"filePath": path, "title": "x"})
+            break
+        except httpx.TransportError:
+            time.sleep(0.1)
+    wait_for(lambda: c.get("/api/queue_items").json()["played"])
+    assert c.post("/api/traktor/reset").json() == {"status": "success"}
+    assert len(c.get("/api/queue_items").json()["played"]) == 1

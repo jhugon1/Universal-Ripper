@@ -149,7 +149,7 @@ def test_state_reset_forgets_everything_but_keeps_the_object():
     assert st.decks["A"]["title"] == "Again"
 
 
-def test_reset_decks_clears_the_saved_copy_and_frees_loaded_items(app_env):
+def test_reset_decks_clears_the_saved_copy_but_not_what_was_played(app_env):
     from ripper_queue import store
 
     app_module, db = app_env
@@ -157,7 +157,7 @@ def test_reset_decks_clears_the_saved_copy_and_frees_loaded_items(app_env):
         app_module.traktor_state.apply("/deckLoaded/A", {"filePath": TRACK, "title": "Fake", "isPlaying": True})
         conn = store.open_db(db)
         item, _ = store.add_item(conn, source="dj", artist="A", title="T")
-        store.update_item(conn, item["id"], status="loaded", file_path=TRACK)
+        store.update_item(conn, item["id"], status="played", file_path=TRACK)
         app_module.save_traktor_state()
         assert json.loads(conn.execute("SELECT data FROM traktor_state").fetchone()[0])["decks"]["A"]["title"] == "Fake"
 
@@ -165,5 +165,5 @@ def test_reset_decks_clears_the_saved_copy_and_frees_loaded_items(app_env):
         assert c.get("/api/traktor/state").json()["decks"]["A"]["title"] is None
         saved = json.loads(conn.execute("SELECT data FROM traktor_state").fetchone()[0])
         assert saved["decks"]["A"]["file_path"] is None  # a restart would not bring the fake deck back
-        assert store.get_item(conn, item["id"])["status"] == "ready"  # no longer on a deck
+        assert store.get_item(conn, item["id"])["status"] == "played"  # played is final
         conn.close()

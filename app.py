@@ -143,7 +143,7 @@ def receiver_info():
 
 
 def sync_queue_with_traktor(decks, now):
-    """Loaded / played / BPM updates for queue items, from what the decks report."""
+    """Played / BPM updates for queue items, from what the decks have loaded."""
     conn = queue_store.open_db(db_file())
     try:
         return queue_sync.apply_sync(conn, decks, now)
@@ -299,14 +299,18 @@ async def dj_dashboard(request: Request):
     return templates.TemplateResponse(request=request, name="dj.html")
 
 def queue_state(conn):
-    """Tonight's session, its items in order, and whether Traktor needs the folder re-selected."""
+    """Tonight's session; the QUEUE (what is still to play, in order, plus failed rips); the tracks already
+    played tonight; and whether Traktor needs the folder re-selected. A played track leaves the queue here only:
+    its file stays in tonight's folder."""
     session = queue_store.current_session(conn)
-    nxt = queue_store.up_next(conn, session["id"])
+    items = queue_store.list_items(conn, session["id"])
+    queue = [i for i in items if i["status"] != "played"]
     return {
         "session": session,
-        "items": [public_item(i) for i in queue_store.list_items(conn, session["id"])],
+        "items": [public_item(i) for i in queue],
+        "to_play": sum(1 for i in queue if i["status"] in ("queued", "downloading", "ready")),
+        "played": [public_item(i) for i in queue_store.list_played(conn, session["id"])],
         "folder": queue_store.folder_state(conn),
-        "up_next": public_item(nxt) if nxt else None,
     }
 
 
@@ -424,13 +428,11 @@ def queue_folder_refreshed():
 
 @app.post("/api/traktor/reset")
 async def reset_traktor_state():
-    """Forget the deck state (and the copy saved in the database), e.g. after a test run left fake decks."""
+    """Forget the deck state (and the copy saved in the database), e.g. after a test run left fake decks.
+    Tracks already marked played stay played."""
     traktor_state.reset()
-    decks = {k: dict(v) for k, v in traktor_state.decks.items()}
     await run_in_threadpool(save_traktor_state)
-    await run_in_threadpool(sync_queue_with_traktor, decks, time.time())  # items no longer on a deck go back to ready
     await broadcast(traktor_event())
-    await broadcast({"event": "queue_update", "status": "traktor"})
     return JSONResponse({"status": "success"})
 
 @app.get("/api/traktor/state")
