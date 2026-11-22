@@ -9,6 +9,7 @@
 A hard link is used so the same file serves every folder (the copy fallback is in files.place_link).
 """
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -20,6 +21,14 @@ from filenames import track_basename
 from . import files, library, store, sync
 
 LIVE = ("queued", "downloading", "ready")
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def clean_error(exc) -> str:
+    """Short message for the page: no terminal colour codes (yt-dlp adds them), no home folder."""
+    text = _ANSI.sub("", f"{type(exc).__name__}: {exc}").replace(str(Path.home()), "~")
+    return re.sub(r"\s+", " ", text).strip()[:300]
 
 _locks = {}
 _locks_guard = threading.Lock()

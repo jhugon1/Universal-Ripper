@@ -12,17 +12,12 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 from . import files, nml, rip, store
+from .rip import clean_error
 
 MAX_ATTEMPTS = 2        # one retry
 CONCURRENCY = 2
 IDLE_POLL = 2.0         # seconds between looks at the queue when nothing woke the worker
 MARKER_RETRY_EVERY = 15.0
-
-
-def clean_error(exc) -> str:
-    """Short message for the UI, without the user's home folder."""
-    text = f"{type(exc).__name__}: {exc}".replace(str(Path.home()), "~")
-    return text[:300]
 
 
 def process(db_path, item_id, root, backend):

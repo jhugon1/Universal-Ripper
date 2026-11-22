@@ -210,7 +210,7 @@ def run_job(job, *, db_path, backend, yt_factory, concurrency=2, limit=None, on_
         try:
             outcome, problem = rip_track(conn, job, track, backend=backend, yt=yt_factory())
         except Exception as exc:  # a download or disk problem on one track must not stop the playlist
-            outcome, problem = "failed", f"{track['artist']} - {track['title']}: {type(exc).__name__}: {str(exc)[:120]}"
+            outcome, problem = "failed", f"{track['artist']} - {track['title']}: {rip.clean_error(exc)}"[:200]
         finally:
             conn.close()
         job.record(outcome, problem)

@@ -1,5 +1,6 @@
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -85,3 +86,13 @@ def test_renaming_a_link_leaves_the_library_file_alone(tone_mp3, tmp_path):
     renamed = target.with_name("003 Artist - Title.mp3")
     os.rename(target, renamed)
     assert source.exists() and os.path.samefile(source, renamed) and not target.exists()
+
+
+def test_error_text_has_no_terminal_colour_codes_and_no_home_folder():
+    from ripper_queue import rip
+
+    colored = RuntimeError("\x1b[0;31mERROR:\x1b[0m [youtube] abc: This video is not available\n  second line")
+    text = rip.clean_error(colored)
+    assert text == "RuntimeError: ERROR: [youtube] abc: This video is not available second line"
+    assert "\x1b" not in text
+    assert str(Path.home()) not in rip.clean_error(OSError(f"cannot write {Path.home()}/x")) and len(rip.clean_error(OSError("x" * 900))) == 300

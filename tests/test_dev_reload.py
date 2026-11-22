@@ -106,11 +106,11 @@ def test_dev_defaults_respect_what_the_caller_set(tmp_path):
     assert run.dev_defaults(full, root=tmp_path / "other") == {} and not (tmp_path / "other" / "dev_data").exists()
 
 
-def test_window_mode_opens_the_control_page_and_the_booth():
-    assert run.window_urls(False) == [run.DJ_URL]
-    assert run.window_urls(True) == [run.DJ_URL, run.BOOTH_URL]
-    assert run.window_urls(True, no_booth=True) == [run.DJ_URL]
-    assert run.window_urls(False, no_booth=True) == [run.DJ_URL]
+def test_the_app_window_opens_the_one_page_on_the_loopback_address():
+    assert run.APP_URL == "http://127.0.0.1:8000/"  # not localhost: the Spotify login returns to this exact address
+    command = run.window_command(run.APP_URL, exe="chrome.exe")
+    assert command == ["chrome.exe", "--app=http://127.0.0.1:8000/", "--window-size=1440,900"]
+    assert run.window_command(run.APP_URL, exe="") is None or run.find_chromium() is not None
 
 
 def test_startup_names_the_branch_and_warns_when_the_queue_code_is_missing(tmp_path):

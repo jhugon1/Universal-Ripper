@@ -294,17 +294,11 @@ def reveal_folder(path: str):
     else:
         subprocess.run(["xdg-open", path], check=False)
 
-@app.get("/")
-async def home():
-    return RedirectResponse("/dj")  # temporary: the one-page UI replaces this in pass 2
+@app.get("/", response_class=HTMLResponse)
+async def page(request: Request):
+    """The one page: decks on top, the ripper bottom left, tonight's queue bottom right."""
+    return templates.TemplateResponse(request=request, name="app.html", context={"dev": devreload.is_dev()})
 
-@app.get("/booth", response_class=HTMLResponse)
-async def booth_view(request: Request):
-    return templates.TemplateResponse(request=request, name="booth.html")
-
-@app.get("/dj", response_class=HTMLResponse)
-async def dj_dashboard(request: Request):
-    return templates.TemplateResponse(request=request, name="dj.html")
 
 def queue_state(conn):
     """Tonight's session; the QUEUE (what is still to play, in order, plus failed rips); the tracks already
@@ -631,7 +625,13 @@ async def events(request: Request):
 @app.post("/api/open_folder")
 def open_folder(folder_type: str = Form(...)):
     try:
-        target = str(queue_store.queue_dir())  # one folder for everything: Ripper Queue (folder_type is kept for compatibility)
+        # tonight's folder if it exists, else the Ripper Queue root (folder_type is kept for compatibility)
+        conn = queue_store.open_db(db_file())
+        try:
+            tonight = queue_store.session_dir(queue_store.current_session(conn))
+        finally:
+            conn.close()
+        target = str(tonight if tonight.is_dir() else queue_store.queue_dir())
         os.makedirs(target, exist_ok=True)
         reveal_folder(target)
         return JSONResponse({"status": "success"})
