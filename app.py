@@ -65,7 +65,8 @@ async def lifespan(app: FastAPI):
     port = configured_port()
     if port:
         # the receiver runs on this event loop, so on_change is called from the loop itself
-        receiver = TraktorReceiver(traktor_state, port, on_change=lambda changes: dirty.set(), info=receiver_info)
+        receiver = TraktorReceiver(traktor_state, port, on_change=lambda changes: dirty.set(), info=receiver_info,
+                                   allow_fake=lambda: not db_is_real())
         receiver.start()
     else:
         print("Traktor receiver off (RIPPER_TRAKTOR_PORT=0)")

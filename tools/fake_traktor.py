@@ -196,10 +196,15 @@ def make_poster(base_url, timeout=2.0):
 
     def post(path, body):
         req = urllib.request.Request(base_url.rstrip("/") + path, json.dumps(body).encode(),
-                                     {"Content-Type": "application/json"})
+                                     {"Content-Type": "application/json", "X-Fake-Traktor": "1"})
         try:
             urllib.request.urlopen(req, timeout=timeout).read()
             return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 403:  # the app is on the real database and says no: stop, do not keep trying
+                sys.exit("STOPPED: the app refuses fake events because it is using the REAL database. "
+                         "Start it with `python run.py --dev` to test with fake data.")
+            return False
         except (urllib.error.URLError, OSError) as exc:
             if time.time() - warned[0] > 5:
                 warned[0] = time.time()

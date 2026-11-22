@@ -210,3 +210,37 @@ def test_the_app_knows_whether_it_is_on_the_real_database(app_env, tmp_path, mon
     assert app_env.db_is_real() is False and app_env.receiver_info()["database"]["name"] == "queue.dev.db"
     monkeypatch.setenv("RIPPER_DB", "queue.db")  # the same file by another spelling is still the real one
     assert app_env.db_is_real() is True
+
+
+def test_fake_events_are_refused_when_the_app_is_on_the_real_database():
+    state = TraktorState()
+    allowed = [False]
+    c = TestClient(create_receiver(state, allow_fake=lambda: allowed[0]))
+    fake = {"x-fake-traktor": "1"}
+    body = {"filePath": TRACK, "title": "Test Track A"}
+    refused = c.post("/deckLoaded/A", json=body, headers=fake)
+    assert refused.status_code == 403 and "real database" in refused.json()["error"]
+    assert state.decks["A"]["title"] is None and state.event_count == 0  # nothing was recorded
+    real = c.post("/deckLoaded/A", json={"filePath": TRACK, "title": "Real Song"})  # the real mod sends no such header
+    assert real.status_code == 200 and state.decks["A"]["title"] == "Real Song"
+    allowed[0] = True  # a dev or test app accepts them
+    assert c.post("/deckLoaded/B", json=body, headers=fake).status_code == 200 and state.decks["B"]["title"] == "Test Track A"
+    assert TestClient(create_receiver(TraktorState())).post("/deckLoaded/A", json=body, headers=fake).status_code == 200  # no policy given
+
+
+def test_the_app_refuses_fake_events_on_its_real_database_but_not_the_real_mod(app_env, monkeypatch):
+    port = free_port()
+    monkeypatch.setenv("RIPPER_TRAKTOR_PORT", str(port))
+    monkeypatch.setattr(app_env, "db_is_real", lambda: True)  # pretend this app is on the real queue.db
+    with TestClient(app_env.app):
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                HTTP.post(f"{base}/updateMasterClock", json={}, timeout=1)
+                break
+            except httpx.TransportError:
+                time.sleep(0.1)
+        fake = HTTP.post(f"{base}/deckLoaded/A", json={"filePath": TRACK, "title": "Test Track A"}, headers={"X-Fake-Traktor": "1"})
+        assert fake.status_code == 403 and app_env.traktor_state.decks["A"]["title"] is None
+        real = HTTP.post(f"{base}/deckLoaded/A", json={"filePath": TRACK, "title": "Real Song"})
+        assert real.status_code == 200 and app_env.traktor_state.decks["A"]["title"] == "Real Song"
