@@ -22,3 +22,6 @@ def ytdlp_outtmpl(download_dir: str, artist: str, title: str) -> str:
     """yt-dlp output template with the name fixed and `%` escaped."""
     name = track_basename(artist, title).replace("%", "%%")
     return f"{download_dir}/{name}.%(ext)s"
+
+
+clean_name = _clean  # also used for folder names (playlists)

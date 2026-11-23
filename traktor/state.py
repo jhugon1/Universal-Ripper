@@ -27,6 +27,9 @@ _DECK_FIELDS = {
     "filePath": "file_path", "title": "title", "artist": "artist", "bpm": "bpm", "tempo": "tempo",
     "key": "key", "trackLength": "track_length", "elapsedTime": "elapsed", "isPlaying": "is_playing",
 }
+# raw mod fields the page shows (beat grid, sync, cue markers, shifted key); kept across restarts because the mod
+# only sends them when a track is loaded
+KEEP_RAW = ("gridOffset", "isSynced", "isKeyLockOn", "resultingKey", "nextCuePos", "nextCueType", "prevCuePos", "prevCueType")
 _STR_FIELDS = {"file_path", "title", "artist", "key"}
 _NUM_FIELDS = {"bpm", "tempo", "track_length", "elapsed"}
 
@@ -43,7 +46,7 @@ def _empty_deck():
     return {
         "file_path": None, "title": None, "artist": None, "bpm": None, "tempo": 1.0, "key": None,
         "track_length": None, "elapsed": 0.0, "elapsed_at": None, "is_playing": False,
-        "loaded_at": None, "started_at": None, "audible_seconds": 0.0, "raw": {},
+        "loaded_at": None, "started_at": None, "audible_seconds": 0.0, "playing_seconds": 0.0, "raw": {},
         "updated_at": None, "restored": False,
     }
 
@@ -82,6 +85,10 @@ class TraktorState:
         self.last_played = None
         self._last_tick = None
 
+    def reset(self):
+        """Forget everything: decks, channels, master clock and counters (the object itself stays)."""
+        self.__init__(clock=self._clock)
+
     # ---- derived -------------------------------------------------------------------------
     def is_audible(self, deck_id):
         d = self.decks[deck_id]
@@ -112,8 +119,11 @@ class TraktorState:
         if self.last_event_at is None or now - self.last_event_at > CREDIT_GAP:
             return
         for deck_id in DECK_IDS:
+            d = self.decks[deck_id]
+            if d["file_path"] and d["is_playing"]:
+                d["playing_seconds"] += now - last  # playing, whether or not the fader is up
             if self.is_audible(deck_id):
-                self.decks[deck_id]["audible_seconds"] += now - last
+                d["audible_seconds"] += now - last
 
     # ---- applying events -----------------------------------------------------------------
     def apply(self, path, body, now=None):
@@ -175,6 +185,7 @@ class TraktorState:
         if new_path != d["file_path"]:  # a different track: start its bookkeeping from zero
             self._set(d, "deck", deck_id, "loaded_at", now, changes)
             self._set(d, "deck", deck_id, "audible_seconds", 0.0, changes)
+            self._set(d, "deck", deck_id, "playing_seconds", 0.0, changes)
             self._set(d, "deck", deck_id, "started_at", None, changes)
             self._set(d, "deck", deck_id, "is_playing", False, changes)
         self._apply_deck_fields(deck_id, body, now, changes)
@@ -250,7 +261,8 @@ class TraktorState:
     def dump(self):
         """Everything needed to restore after a restart. Includes file paths: keep it in the local DB only."""
         return {
-            "decks": {k: {f: v for f, v in d.items() if f != "raw"} for k, d in self.decks.items()},
+            "decks": {k: dict({f: v for f, v in d.items() if f != "raw"}, raw_kept={f: d["raw"][f] for f in KEEP_RAW if f in d["raw"]})
+                      for k, d in self.decks.items()},
             "channels": {k: {f: v for f, v in c.items() if f != "raw"} for k, c in self.channels.items()},
             "master": dict(self.master),
             "last_played": self.last_played,
@@ -275,10 +287,13 @@ class TraktorState:
                     continue
                 else:
                     value = _num(value)
-                    if value is None and field in ("tempo", "elapsed", "audible_seconds"):
+                    if value is None and field in ("tempo", "elapsed", "audible_seconds", "playing_seconds"):
                         value = blank[field]
                 d[field] = value
             d["restored"] = bool(d["file_path"])
+            kept = saved.get("raw_kept")
+            if isinstance(kept, dict) and d["file_path"]:
+                d["raw"].update({f: v for f, v in kept.items() if f in KEEP_RAW and (v is None or isinstance(v, (str, int, float, bool)))})
         for channel_id, saved in (data.get("channels") or {}).items():
             if channel_id in self.channels and isinstance(saved, dict):
                 ch = self.channels[channel_id]

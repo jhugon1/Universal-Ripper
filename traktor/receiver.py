@@ -31,13 +31,24 @@ def configured_port(environ=None) -> int:
     return port if 0 <= port <= 65535 else DEFAULT_PORT
 
 
-def create_receiver(state, on_change=None) -> FastAPI:
+FAKE_HEADER = "x-fake-traktor"  # tools/fake_traktor.py marks every event it sends with this
+
+
+def create_receiver(state, on_change=None, info=None, allow_fake=None) -> FastAPI:
     """ASGI app: POST /{kind} and /{kind}/{arg}. Always answers {} quickly, whatever the body."""
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/")
+    async def about():
+        """Lets tools such as fake_traktor check what they are about to feed before posting."""
+        return JSONResponse({"app": "ripper-traktor-receiver", **(info() if info else {})})
 
     @app.post("/{kind}")
     @app.post("/{kind}/{arg}")
     async def receive(request: Request, kind: str, arg: str = ""):
+        if request.headers.get(FAKE_HEADER) and allow_fake is not None and not allow_fake():
+            # a test tool is feeding the REAL database (for example a loop left running): refuse, never record it
+            return JSONResponse({"error": "fake events are refused: the app is using the real database"}, status_code=403)
         try:
             raw = await request.body()
             try:
@@ -72,8 +83,8 @@ def _bind(host, port):
 class TraktorReceiver:
     """Runs the receiver as a second uvicorn server inside the running event loop."""
 
-    def __init__(self, state, port, on_change=None, host="127.0.0.1", retry_seconds=3.0):
-        self.state, self.port, self.on_change = state, port, on_change
+    def __init__(self, state, port, on_change=None, host="127.0.0.1", retry_seconds=3.0, info=None, allow_fake=None):
+        self.state, self.port, self.on_change, self.info, self.allow_fake = state, port, on_change, info, allow_fake
         self.host, self.retry_seconds = host, retry_seconds
         self.bound = False
         self._server = None
@@ -97,7 +108,7 @@ class TraktorReceiver:
                           "running without Traktor input")
                     return
                 await asyncio.sleep(0.2)
-        config = uvicorn.Config(create_receiver(self.state, self.on_change), log_config=None,
+        config = uvicorn.Config(create_receiver(self.state, self.on_change, self.info, self.allow_fake), log_config=None,
                                 log_level="warning", access_log=False, lifespan="off")
         self._server = uvicorn.Server(config)
         self._server.install_signal_handlers = lambda: None  # the main server owns signals

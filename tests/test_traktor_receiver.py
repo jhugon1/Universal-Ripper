@@ -171,7 +171,7 @@ def test_busy_port_does_not_break_the_app(app_env, monkeypatch):
         monkeypatch.setenv("RIPPER_TRAKTOR_PORT", str(blocker.getsockname()[1]))
         start = time.time()
         with TestClient(app_env.app) as c:
-            assert c.get("/api/queue").status_code == 200
+            assert c.get("/api/queue_items").status_code == 200
             assert c.get("/api/traktor/state").json()["now_playing"] is None
         assert time.time() - start < 3, "shutdown should not wait for the bind retry"
 
@@ -192,3 +192,55 @@ def test_new_sse_client_gets_current_state_first(app_env):
 
     msg = json.loads(asyncio.run(first_message()).removeprefix("data: "))
     assert msg["event"] == "traktor_state" and msg["state"]["decks"]["A"]["title"] == "Song"
+
+
+def test_receiver_root_says_which_database_the_app_uses():
+    c = TestClient(create_receiver(TraktorState(), info=lambda: {"database": {"real": True, "name": "queue.db"}}))
+    body = c.get("/").json()
+    assert body["app"] == "ripper-traktor-receiver" and body["database"] == {"real": True, "name": "queue.db"}
+    assert "database" not in TestClient(create_receiver(TraktorState())).get("/").json()
+    assert c.post("/").status_code == 405  # still POST-only for events
+
+
+def test_the_app_knows_whether_it_is_on_the_real_database(app_env, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RIPPER_DB", raising=False)
+    assert app_env.db_is_real() is True and app_env.receiver_info()["database"] == {"real": True, "name": "queue.db"}
+    monkeypatch.setenv("RIPPER_DB", str(tmp_path / "queue.dev.db"))
+    assert app_env.db_is_real() is False and app_env.receiver_info()["database"]["name"] == "queue.dev.db"
+    monkeypatch.setenv("RIPPER_DB", "queue.db")  # the same file by another spelling is still the real one
+    assert app_env.db_is_real() is True
+
+
+def test_fake_events_are_refused_when_the_app_is_on_the_real_database():
+    state = TraktorState()
+    allowed = [False]
+    c = TestClient(create_receiver(state, allow_fake=lambda: allowed[0]))
+    fake = {"x-fake-traktor": "1"}
+    body = {"filePath": TRACK, "title": "Test Track A"}
+    refused = c.post("/deckLoaded/A", json=body, headers=fake)
+    assert refused.status_code == 403 and "real database" in refused.json()["error"]
+    assert state.decks["A"]["title"] is None and state.event_count == 0  # nothing was recorded
+    real = c.post("/deckLoaded/A", json={"filePath": TRACK, "title": "Real Song"})  # the real mod sends no such header
+    assert real.status_code == 200 and state.decks["A"]["title"] == "Real Song"
+    allowed[0] = True  # a dev or test app accepts them
+    assert c.post("/deckLoaded/B", json=body, headers=fake).status_code == 200 and state.decks["B"]["title"] == "Test Track A"
+    assert TestClient(create_receiver(TraktorState())).post("/deckLoaded/A", json=body, headers=fake).status_code == 200  # no policy given
+
+
+def test_the_app_refuses_fake_events_on_its_real_database_but_not_the_real_mod(app_env, monkeypatch):
+    port = free_port()
+    monkeypatch.setenv("RIPPER_TRAKTOR_PORT", str(port))
+    monkeypatch.setattr(app_env, "db_is_real", lambda: True)  # pretend this app is on the real queue.db
+    with TestClient(app_env.app):
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                HTTP.post(f"{base}/updateMasterClock", json={}, timeout=1)
+                break
+            except httpx.TransportError:
+                time.sleep(0.1)
+        fake = HTTP.post(f"{base}/deckLoaded/A", json={"filePath": TRACK, "title": "Test Track A"}, headers={"X-Fake-Traktor": "1"})
+        assert fake.status_code == 403 and app_env.traktor_state.decks["A"]["title"] is None
+        real = HTTP.post(f"{base}/deckLoaded/A", json={"filePath": TRACK, "title": "Real Song"})
+        assert real.status_code == 200 and app_env.traktor_state.decks["A"]["title"] == "Real Song"

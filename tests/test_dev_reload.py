@@ -87,3 +87,40 @@ def test_uvicorn_kwargs():
     dev = run.uvicorn_kwargs(True)
     assert dev["reload"] is True and "*.py" in dev["reload_includes"]
     assert Path(dev["reload_dirs"][0]) == Path(run.ROOT)
+
+
+def test_dev_mode_never_defaults_to_the_real_database(tmp_path):
+    env = {}
+    chosen = run.dev_defaults(env, root=tmp_path)
+    assert set(chosen) == {"RIPPER_DB", "RIPPER_QUEUE_DIR", "RIPPER_LIBRARY_DIR", "RIPPER_PLAYLIST_DIR"}
+    assert Path(env["RIPPER_DB"]) == tmp_path / "dev_data" / "queue.dev.db" and Path(env["RIPPER_DB"]).name != "queue.db"
+    assert Path(env["RIPPER_QUEUE_DIR"]) == tmp_path / "dev_data" / "Ripper Queue"
+    assert (tmp_path / "dev_data").is_dir()
+
+
+def test_dev_defaults_respect_what_the_caller_set(tmp_path):
+    env = {"RIPPER_DB": "mine.db"}
+    assert set(run.dev_defaults(env, root=tmp_path)) == {"RIPPER_QUEUE_DIR", "RIPPER_LIBRARY_DIR", "RIPPER_PLAYLIST_DIR"}
+    assert env["RIPPER_DB"] == "mine.db"
+    full = {"RIPPER_DB": "a.db", "RIPPER_QUEUE_DIR": "q", "RIPPER_LIBRARY_DIR": "l", "RIPPER_PLAYLIST_DIR": "p"}
+    assert run.dev_defaults(full, root=tmp_path / "other") == {} and not (tmp_path / "other" / "dev_data").exists()
+
+
+def test_the_app_window_opens_the_one_page_on_the_loopback_address():
+    assert run.APP_URL == "http://127.0.0.1:8000/"  # not localhost: the Spotify login returns to this exact address
+    command = run.window_command(run.APP_URL, exe="chrome.exe")
+    assert command == ["chrome.exe", "--app=http://127.0.0.1:8000/", "--window-size=1440,900"]
+    assert run.window_command(run.APP_URL, exe="") is None or run.find_chromium() is not None
+
+
+def test_startup_names_the_branch_and_warns_when_the_queue_code_is_missing(tmp_path):
+    lines = run.checkout_report(tmp_path)  # not a git checkout, and no queue code
+    assert lines[0].startswith("Branch: unknown") and "WARNING" in lines[1] and "ripper_queue" in lines[1]
+    package = tmp_path / "ripper_queue"
+    package.mkdir()
+    for name in ("store.py", "worker.py", "files.py"):
+        (package / name).write_text("")
+    assert run.queue_code_present(tmp_path) and len(run.checkout_report(tmp_path)) == 1
+    (package / "worker.py").unlink()
+    assert not run.queue_code_present(tmp_path)  # a half-present package counts as missing
+    assert run.current_branch(Path(run.ROOT)) not in (None, "")  # this checkout is a git repo

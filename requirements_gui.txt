@@ -1,5 +1,0 @@
-# GUI app dependencies (in addition to the existing requirements.txt)
-PyQt6
-spotdl
-ytmusicapi
-yt-dlp

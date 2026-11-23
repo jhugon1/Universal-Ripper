@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ripped Ripper</title>
+<link rel="icon" type="image/jpeg" href="/static/ripped_face.jpg">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+{% if not dev %}<div id="splash" aria-hidden="true"><img class="splash-face" src="/static/ripped_face.jpg" alt=""><img class="splash-word" src="/static/ripper_wordmark.png" alt="Ripper"></div>{% endif %}
+
+<div id="page">
+
+  <section id="decks" aria-label="Decks">
+    {% for letter in ["A", "B"] %}
+    <div class="deck" data-deck="{{ letter }}">
+      <div class="deck-top">
+        <div class="deck-art"><span></span></div>
+        <div class="deck-titles">
+          <div class="deck-title"></div>
+          <div class="deck-artist"></div>
+          <div class="deck-state"></div>
+        </div>
+        <div class="deck-num">
+          <div class="deck-time"></div>
+          <div class="deck-sub deck-total"></div>
+        </div>
+        <div class="deck-num">
+          <div class="deck-bpm"></div>
+          <div class="deck-sub deck-tempo"></div>
+        </div>
+        <div class="deck-letter">{{ letter }}</div>
+      </div>
+      <div class="deck-btns">
+        <div class="btn-group"><span class="dbtn dbtn-sync">SYNC</span><span class="dbtn dbtn-master">MASTER</span></div>
+        <div class="deck-strip"><i></i><i></i><i></i></div>
+        <div class="btn-group"><span class="dbtn dbtn-nudge">&#9666;|</span><span class="dbtn dbtn-nudge">|&#9656;</span></div>
+        <button class="deck-reset" type="button" title="Forget the deck state shown here" style="visibility: hidden">Reset</button>
+      </div>
+      <div class="deck-wave" role="img" aria-label="Waveform">
+        <canvas class="wave-main"></canvas>
+        <div class="deck-playhead"></div>
+      </div>
+      <div class="deck-overrow">
+        <span class="dbtn dbtn-start">|&#9666;</span>
+        <div class="deck-over" role="img" aria-label="Track progress">
+          <canvas class="wave-over"></canvas>
+          <div class="bar-fill"></div>
+          <div class="deck-playhead over-head"></div>
+        </div>
+        <span class="dbtn dbtn-key over-key"></span>
+      </div>
+      <div class="deck-times"></div>
+    </div>
+    {% endfor %}
+  </section>
+
+  <div id="lower">
+
+    <section class="panel" id="ripper" aria-label="Ripper">
+      <div class="panel-head">
+        <span class="eyebrow">RIPPER</span>
+        <span class="extra" id="extra">
+          <button class="btn-ghost small" type="button" id="extra-pick" title="Also save every rip into a folder you choose">+ Also save to folder</button>
+          <button class="btn-ghost small" type="button" id="popup-toggle" title="Show RIPPED over Traktor when a rip finishes">Popup on</button>
+          <button class="btn-ghost small" type="button" id="extra-clear" title="Stop saving rips there" hidden>&times;</button>
+        </span>
+        <div class="tabs" role="tablist">
+          <button class="tab on" role="tab" id="tab-search" type="button">Search</button>
+          <button class="tab" role="tab" id="tab-playlist" type="button">Playlist</button>
+        </div>
+      </div>
+
+      <div class="view" id="view-search">
+        <form class="row" id="search-form">
+          <label for="q" class="sr">Search songs</label>
+          <input id="q" type="text" placeholder="Artist, song, or paste a YouTube link" autocomplete="off">
+          <button class="btn-quiet" type="submit">Search</button>
+        </form>
+        <div class="list" id="results"></div>
+      </div>
+
+      <div class="view" id="view-playlist" hidden>
+        <form class="row" id="playlist-form">
+          <label for="pl" class="sr">Playlist link</label>
+          <input id="pl" type="text" placeholder="Paste a Spotify or Apple Music playlist link" autocomplete="off">
+          <button class="btn-quiet" type="submit" id="fetch-btn">Fetch</button>
+        </form>
+        <div class="pl-status" id="pl-status" aria-live="polite">
+          <span class="pl-status-text" id="pl-status-text"></span>
+          <form class="pl-status-form" id="spotify-id-form" hidden>
+            <input id="spotify-id" type="text" placeholder="Spotify Client ID" autocomplete="off">
+            <button class="btn-quiet small" type="submit">Save</button>
+          </form>
+          <button class="btn-quiet small" type="button" id="spotify-connect" hidden>Connect Spotify</button>
+        </div>
+        <div class="pl-card">
+          <div class="pl-head">
+            <span class="pl-name" id="pl-name">Paste a link and press Fetch</span>
+            <span class="pl-count" id="pl-count"></span>
+          </div>
+          <div class="pl-save" id="pl-save">Playlist rips are saved in their own folder and are not added to tonight's queue.</div>
+          <div class="pl-progress">
+            <div class="pl-bar"><div class="pl-bar-fill" id="pl-bar-fill"></div></div>
+            <span class="pl-bar-text" id="pl-bar-text"></span>
+          </div>
+          <button class="btn-amber" type="button" id="pl-rip" disabled>Rip playlist</button>
+        </div>
+        <div class="pl-foot">Tracks already in your library are linked, not downloaded again.</div>
+      </div>
+    </section>
+
+    <section class="panel" id="queue" aria-label="Tonight's queue">
+      <div class="panel-head">
+        <div class="queue-title">
+          <span class="eyebrow">TONIGHT'S QUEUE</span>
+          {% if dev %}<span class="devbadge" title="Test folders and database, not the ones Traktor uses">DEV DATA</span>{% endif %}<span class="queue-sub" id="queue-sub"></span>
+        </div>
+        <div class="queue-actions">
+          <button class="btn-ghost" type="button" id="open-folder">Open folder</button>
+          <button class="btn-ghost" type="button" id="new-night">New night</button>
+        </div>
+      </div>
+      <div class="queue-list" id="queue-list"></div>
+      <div class="played">
+        <button class="played-toggle" type="button" id="played-toggle" aria-expanded="false">
+          <span id="played-count">Played tonight: 0</span><span class="played-hint" id="played-hint">show</span>
+        </button>
+        <div class="played-list" id="played-list" hidden></div>
+      </div>
+    </section>
+
+  </div>
+
+  <div id="conn" hidden>Reconnecting&hellip;</div>
+</div>
+
+<div id="toast" role="status" aria-live="polite">
+  <img class="toast-art" id="toast-art" alt="">
+  <div class="toast-text">
+    <div class="toast-head" id="toast-head">
+      <span class="toast-already" id="toast-already">Already</span>
+      <img class="toast-word" src="/static/ripped_wordmark.png" alt="RIPPED">
+    </div>
+    <span class="toast-title" id="toast-title"></span>
+    <span class="toast-sub" id="toast-sub"></span>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -225,3 +225,24 @@ def test_replaying_committed_samples(st):
     for e in events:  # the mod repeats itself: the same event twice in a row changes nothing
         st.apply(e["path"], e["body"])
         assert st.apply(e["path"], e["body"]) == []
+
+
+def test_playing_seconds_counts_playing_time_whatever_the_fader_does(st, clock):
+    play(st)  # no channel levels known at all: not audible, but playing
+    for _ in range(4):
+        clock.advance(1)
+        st.apply("/updateDeck/A", {"elapsedTime": clock.t})
+    assert st.decks["A"]["playing_seconds"] == pytest.approx(4.0)
+    assert st.decks["A"]["audible_seconds"] == 0.0
+    st.apply("/updateDeck/A", {"isPlaying": False})
+    clock.advance(5)
+    st.apply("/updateDeck/A", {"elapsedTime": 9.0})
+    assert st.decks["A"]["playing_seconds"] == pytest.approx(4.0)  # paused time is not counted
+    st.apply("/updateDeck/A", {"isPlaying": True})
+    clock.advance(1)
+    st.apply("/updateDeck/A", {"elapsedTime": 10.0})
+    clock.advance(60)  # signal lost: the gap is not credited
+    st.apply("/updateDeck/A", {"elapsedTime": 11.0})
+    assert st.decks["A"]["playing_seconds"] == pytest.approx(5.0)
+    st.apply("/deckLoaded/A", loaded(TRACK_B))
+    assert st.decks["A"]["playing_seconds"] == 0.0
