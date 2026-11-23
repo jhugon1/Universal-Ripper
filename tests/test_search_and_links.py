@@ -170,3 +170,36 @@ def test_two_videos_with_the_same_name_finishing_together_never_overwrite_each_o
     songs = sorted((tmp_path / "Library").glob("*.mp3"))
     assert [p.name for p in songs] == ["Band - Song (2).mp3", "Band - Song.mp3"]
     assert sorted(p.read_bytes() for p in songs) == [b"versionAAAA", b"versionBBBB"]   # both survive
+
+
+# ---- the RIPPED pop-up over Traktor ----------------------------------------------------------------------
+def test_popup_command_and_switches(tmp_path, monkeypatch):
+    from ripper_queue import popup, store
+    cmd = popup.command("A - B", "Already", "Added")
+    assert cmd[1].endswith("popup_window.py") and cmd[2:] == ["--title", "A - B", "--lead", "Already", "--sub", "Added"]
+    conn = store.open_db(str(tmp_path / "t.db"))
+    store.ensure_schema(conn)
+    monkeypatch.setenv("RIPPER_POPUP", "1")
+    assert popup.enabled(conn) is True
+    store.meta_set(conn, popup.OFF_KEY, "1")
+    assert popup.enabled(conn) is False                      # switched off on the page
+    store.meta_set(conn, popup.OFF_KEY, "")
+    monkeypatch.setenv("RIPPER_POPUP", "0")
+    assert popup.enabled(conn) is False                      # switched off for the whole process (tests)
+    started = []
+    monkeypatch.setattr(popup.subprocess, "Popen", lambda *a, **k: started.append(a))
+    assert popup.show("T", conn=conn) is False and started == []
+
+
+def test_popup_endpoint_and_triggers(tmp_path, monkeypatch):
+    import app as app_module
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("RIPPER_DB", str(tmp_path / "own.db"))
+    shown = []
+    monkeypatch.setattr(app_module.queue_popup, "show", lambda title, lead="", sub="", conn=None: shown.append((title, lead, sub)) or True)
+    with TestClient(app_module.app) as c:
+        assert c.get("/api/popup").json() == {"on": True}
+        assert c.post("/api/popup", data={"on": "false"}).json() == {"on": False}
+        assert c.post("/api/popup", data={"on": "true"}).json() == {"on": True}
+        app_module.popup_show("Song", "Already", "Added to tonight's folder")
+        assert shown == [("Song", "Already", "Added to tonight's folder")]

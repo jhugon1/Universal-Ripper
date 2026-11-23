@@ -21,6 +21,7 @@ from ripper_queue import store as queue_store
 from ripper_queue import sync as queue_sync
 from ripper_queue.worker import QueueWorker
 from traktor.receiver import TraktorReceiver, configured_port
+from ripper_queue import popup as queue_popup
 from traktor import stripes as traktor_stripes
 from traktor.state import TraktorState, file_name_of
 import asyncio
@@ -258,6 +259,18 @@ class YtBackend:
         return out
 
 
+def popup_show(title, lead="", sub=""):
+    """The RIPPED pop-up over Traktor (a separate window; off when switched off on the page). Never raises."""
+    try:
+        conn = queue_store.open_db(db_file())
+        try:
+            queue_popup.show(title, lead=lead, sub=sub, conn=conn)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 async def on_queue_result(item_id, outcome):
     """A queued rip finished (ready / failed / removed): tell the page, which shows the toast."""
     def finish():
@@ -272,6 +285,8 @@ async def on_queue_result(item_id, outcome):
         await broadcast({"event": "rip_result", "kind": "new", "id": item_id, "ok": outcome == "ready",
                          "video_id": item["video_id"], "title": item["title"], "artist": item["artist"],
                          "message": item["error"] if outcome == "failed" else None})
+    if item and outcome == "ready":
+        await run_in_threadpool(popup_show, item["title"], "", item["artist"])
     await broadcast({"event": "queue_update", "id": item_id, "status": outcome})
 
 
@@ -351,6 +366,8 @@ def rip_track(video_id: str = Form(...), artist: str = Form(...), title: str = F
     kind = outcome["kind"]
     if kind == "new":
         queue_worker.wake_threadsafe()
+    if kind == "duplicate":
+        popup_show(title, "Already", "Added to tonight's folder")
     if kind in ("new", "duplicate", "error"):
         notify({"event": "queue_update", "status": "added"})
     return JSONResponse({"kind": kind, "item": public_item(outcome["item"]), "message": outcome.get("message"),
@@ -504,6 +521,8 @@ async def run_playlist(job):
     except Exception as exc:  # the job itself broke (not just one track)
         job.status = "done"
         job.problems.append(f"{type(exc).__name__}: {str(exc)[:120]}")
+    if job.done:
+        await run_in_threadpool(popup_show, job.name, "", f"Playlist: {job.done} track{'s' if job.done != 1 else ''} ripped")
     await broadcast({"event": "playlist_done", **job.snapshot()})
 
 
@@ -702,6 +721,30 @@ def extra_folder_state():
     finally:
         conn.close()
     return {"set": bool(folder), "name": os.path.basename(folder.rstrip("\\/")) if folder else None}
+
+
+def popup_state():
+    conn = queue_store.open_db(db_file())
+    try:
+        return {"on": queue_store.meta_get(conn, queue_popup.OFF_KEY) != "1"}
+    finally:
+        conn.close()
+
+
+@app.get("/api/popup")
+def get_popup():
+    return popup_state()
+
+
+@app.post("/api/popup")
+def set_popup(on: bool = Form(...)):
+    """Switch the RIPPED pop-up over Traktor on or off (remembered)."""
+    conn = queue_store.open_db(db_file())
+    try:
+        queue_store.meta_set(conn, queue_popup.OFF_KEY, "" if on else "1")
+    finally:
+        conn.close()
+    return popup_state()
 
 
 @app.get("/api/extra_folder")

@@ -270,6 +270,13 @@
     if (r.ok) showExtra(r.data);
   });
   api('/api/extra_folder').then((r) => { if (r.ok) showExtra(r.data); });
+  let popupOn = true;
+  function showPopup(s) { popupOn = !!(s && s.on); setText($('#popup-toggle'), popupOn ? 'Popup on' : 'Popup off'); $('#popup-toggle').style.opacity = popupOn ? '1' : '0.55'; }
+  $('#popup-toggle').addEventListener('click', async () => {
+    const r = await api('/api/popup', { method: 'POST', body: new URLSearchParams({ on: String(!popupOn) }) });
+    if (r.ok) showPopup(r.data);
+  });
+  api('/api/popup').then((r) => { if (r.ok) showPopup(r.data); });
 
   // ---------- tonight's queue ----------
   const ICON = {
