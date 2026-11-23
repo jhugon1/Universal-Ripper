@@ -47,7 +47,7 @@ def test_every_static_file_the_page_uses_is_served(client):
         got = client.get(path)
         assert got.status_code == 200 and len(got.content) > 1000, path
     css = client.get("/static/app.css").text
-    assert "/static/fonts/Inter.woff2" in css and "#F5A524" in css and "#0E0F12" in css  # the approved tokens
+    assert "/static/fonts/Inter.woff2" in css and "#F5A524" in css and "#101010" in css  # the approved tokens
 
 
 def test_the_wordmark_is_the_agreed_crop():
