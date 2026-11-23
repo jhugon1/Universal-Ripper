@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
@@ -526,6 +526,20 @@ async def playlist_rip(fetch_id: str = Form(...)):
 async def playlist_job_state():
     job = playlist_job["job"]
     return JSONResponse(job.snapshot() if job else {"status": "idle"})
+
+
+def waveform_file(deck: str):
+    base = os.environ.get("RIPPER_WAVEFORM_DIR") or os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "RippedRipper", "waveforms")
+    return os.path.join(base, f"deck{deck}.png")
+
+
+@app.get("/api/waveform/{deck}")
+def deck_waveform(deck: str):
+    """The deck's waveform image saved by the Traktor mod (the waveform experiment); 404 when there is none."""
+    path = waveform_file(deck.upper()) if deck.upper() in ("A", "B", "C", "D") else None
+    if not path or not os.path.isfile(path):
+        return Response(status_code=404)
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/library/cover/{video_id}")

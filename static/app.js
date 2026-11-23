@@ -62,7 +62,7 @@
     decks[card.dataset.deck] = {
       card, state: $('.deck-state', card), title: $('.deck-title', card), artist: $('.deck-artist', card),
       time: $('.deck-time', card), bpm: $('.deck-bpm', card), key: $('.deck-key', card), fill: $('.bar-fill', card),
-      total: $('.deck-total', card), tempo: $('.deck-tempo', card), master: $('.dbtn-master', card), head: $('.deck-playhead', card),
+      total: $('.deck-total', card), tempo: $('.deck-tempo', card), master: $('.dbtn-master', card), head: $('.deck-playhead', card), wave: $('.deck-waveimg', card), waveKey: '',
       times: $('.deck-times', card), reset: $('.deck-reset', card),
     };
   });
@@ -94,6 +94,7 @@
     const d = snap.decks[letter], ui = decks[letter];
     if (!d || !ui) return;
     const st = deckStatus(d, now);
+    refreshWaveform(letter, d);
     let stateText = '', stateColor = C.muted, opacity = 1, timeColor = '';
     if (st === 'empty') { stateText = 'EMPTY'; stateColor = C.faint; }
     else if (st === 'playing') { stateText = 'PLAYING'; stateColor = C.accent; }
@@ -130,6 +131,21 @@
     setStyle(ui.title, 'color', st === 'empty' ? C.faint : '');
     setStyle(ui.card, 'opacity', String(opacity));
     setStyle(ui.reset, 'visibility', (d.restored || st === 'stale') ? 'visible' : 'hidden');   // only when there is something to forget
+  }
+
+  // the waveform picture the Traktor mod saves (experiment); refreshed after a track change, hidden when there is none
+  function refreshWaveform(letter, d) {
+    const ui = decks[letter], key = d && d.file_name ? d.file_name : '';
+    if (ui.waveKey === key) return;
+    ui.waveKey = key;
+    ui.wave.hidden = true;
+    if (!key) return;
+    [3000, 7000].forEach((ms) => setTimeout(() => {
+      if (ui.waveKey !== key) return;
+      ui.wave.onload = () => { ui.wave.hidden = false; };
+      ui.wave.onerror = () => {};
+      ui.wave.src = '/api/waveform/' + letter + '?t=' + Date.now();
+    }, ms));
   }
 
   function frame() {

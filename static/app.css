@@ -64,6 +64,8 @@ a { color: var(--accent); }
 .deck-wave { position: relative; flex: 1 1 auto; min-height: 0; background: #141414; border-radius: 3px; overflow: hidden; }
 .bar { position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), #232323 calc(10% - 1px) 10%); }
 .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; opacity: 0.22; }
+.deck-waveimg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+.deck-waveimg:not([hidden]) + .bar { background: none; }
 .deck-playhead { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: #E8503A; }
 .deck-times { font-size: 13px; color: #7C7C7C; font-variant-numeric: tabular-nums; display: none; }
 

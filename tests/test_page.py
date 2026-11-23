@@ -62,3 +62,15 @@ def test_the_page_script_is_valid_javascript():
         pytest.skip("node is not installed")
     done = subprocess.run([node, "--check", str(ROOT / "static" / "app.js")], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
+
+
+def test_deck_waveform_endpoint_serves_the_mods_picture_or_404(tmp_path, monkeypatch):
+    import app as app_module
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("RIPPER_WAVEFORM_DIR", str(tmp_path))
+    with TestClient(app_module.app) as c:
+        assert c.get("/api/waveform/A").status_code == 404
+        (tmp_path / "deckA.png").write_bytes(b"\x89PNG fake")
+        got = c.get("/api/waveform/a")
+        assert got.status_code == 200 and got.headers["content-type"] == "image/png" and got.content == b"\x89PNG fake"
+        assert c.get("/api/waveform/Z").status_code == 404
