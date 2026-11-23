@@ -108,3 +108,21 @@ def test_waveform_endpoint_finds_the_stripe_of_the_loaded_deck_and_remembers_it(
         app_module.traktor_state.decks["A"]["loaded_at"] = 9999999999          # later loads reuse the remembered key
         assert c.get("/api/waveform/A").status_code == 200
         assert c.get("/api/waveform/Z").status_code == 404
+
+
+def test_a_hard_link_of_a_matched_track_reuses_its_waveform(tmp_path, monkeypatch):
+    import os
+    import app as app_module
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("RIPPER_STRIPES_DIR", str(tmp_path / "stripes"))
+    (tmp_path / "stripes").mkdir()
+    make_stripe(tmp_path / "stripes", "KEYONE", loaded=5000)
+    song, link = tmp_path / "song.mp3", tmp_path / "tonight.mp3"
+    song.write_bytes(b"x")
+    os.link(song, link)
+    with TestClient(app_module.app) as c:
+        decks = app_module.traktor_state.decks
+        decks["A"]["file_path"], decks["A"]["loaded_at"] = str(song), 4999
+        assert c.get("/api/waveform/A").status_code == 200
+        decks["B"]["file_path"], decks["B"]["loaded_at"] = str(link), 9999999999   # nothing touched near this load
+        assert c.get("/api/waveform/B").status_code == 200

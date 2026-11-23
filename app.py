@@ -546,6 +546,14 @@ def stripe_for_deck(letter):
         known = json.loads(queue_store.meta_get(conn, STRIPE_MAP_KEY) or "{}")
         key = known.get(path)
         if key not in stripes:
+            for other, other_key in known.items():   # the same file under another name (a hard link): same waveform
+                try:
+                    if other_key in stripes and os.path.exists(other) and os.path.exists(path) and os.path.samefile(other, path):
+                        key = other_key
+                        break
+                except OSError:
+                    pass
+        if key not in stripes:
             key = traktor_stripes.pick_stripe(stripes, deck.get("loaded_at") or 0, taken={k for p, k in known.items() if p != path})
             if not key:
                 return None
