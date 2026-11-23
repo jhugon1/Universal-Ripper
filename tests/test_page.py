@@ -115,6 +115,7 @@ def test_a_hard_link_of_a_matched_track_reuses_its_waveform(tmp_path, monkeypatc
     import app as app_module
     from fastapi.testclient import TestClient
     monkeypatch.setenv("RIPPER_STRIPES_DIR", str(tmp_path / "stripes"))
+    monkeypatch.setenv("RIPPER_DB", str(tmp_path / "own.db"))   # its own database: no key claimed by other tests
     (tmp_path / "stripes").mkdir()
     make_stripe(tmp_path / "stripes", "KEYONE", loaded=5000)
     song, link = tmp_path / "song.mp3", tmp_path / "tonight.mp3"
