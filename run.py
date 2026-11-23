@@ -4,6 +4,7 @@
   python run.py --dev       the same with a separate dev database and folders, and the page reloads
                             when .py, template or static files change
   python run.py --no-window start the server only (open http://127.0.0.1:8000/ yourself)
+  python run.py --check     report what is ready and what is missing (Python, packages, ffmpeg, browser, Traktor), then exit
 """
 import argparse
 import importlib.util
@@ -14,14 +15,115 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 from pathlib import Path
 
-import uvicorn
+try:
+    import uvicorn
+except ImportError:   # not set up yet: `python run.py --check` still works and says what to do
+    uvicorn = None
 
 PORT = 8000
 APP_URL = f"http://127.0.0.1:{PORT}/"  # 127.0.0.1, not localhost: the Spotify login returns to this exact address
 ROOT = Path(__file__).resolve().parent
+
+
+REQUIRED_PACKAGES = ("fastapi", "uvicorn", "yt_dlp", "ytmusicapi", "jinja2", "multipart", "mutagen", "PIL")
+
+
+def refresh_windows_path():
+    """Windows: add the PATH entries that were created after this program's parent started (for example ffmpeg installed a minute
+    ago by Setup), so a double-clicked launcher sees them without signing out."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+        parts = []
+        for hive, sub in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                          (winreg.HKEY_CURRENT_USER, "Environment")):
+            try:
+                with winreg.OpenKey(hive, sub) as key:
+                    value, _ = winreg.QueryValueEx(key, "Path")
+                    parts += [os.path.expandvars(x) for x in value.split(os.pathsep) if x]
+            except OSError:
+                pass
+        have = {x.lower() for x in os.environ.get("PATH", "").split(os.pathsep)}
+        extra = [x for x in parts if x.lower() not in have]
+        if extra:
+            os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(extra)
+    except Exception:
+        pass
+
+
+def app_is_running(port=PORT) -> bool:
+    """True when a Ripped Ripper server already answers on the port (GET /api/popup is ours)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/popup", timeout=1.5) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def traktor_dirs():
+    """Traktor Pro install folders found on this machine (newest first)."""
+    roots = [os.environ.get(k) for k in ("PROGRAMFILES", "PROGRAMFILES(X86)")]
+    return [Path(r) / "Native Instruments" / name for r in roots if r for name in ("Traktor Pro 4", "Traktor Pro 3")
+            if (Path(r) / "Native Instruments" / name).is_dir()]
+
+
+def traktor_mod_installed(traktor_dir) -> bool:
+    """True when the deck-data mod is in this Traktor's D2 mapping."""
+    d2 = Path(traktor_dir) / "Resources64" / "qml" / "CSI" / "D2" / "D2.qml"
+    try:
+        return "ApiModule" in d2.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def environment_report(port=PORT):
+    """[(ok, required, text)] for `--check`: what a working install needs, and what is only nice to have."""
+    rows = []
+    py_ok = sys.version_info >= (3, 10)
+    rows.append((py_ok, True, f"Python {sys.version_info.major}.{sys.version_info.minor}" + ("" if py_ok else " (3.10 or newer is needed)")))
+    missing = [m for m in REQUIRED_PACKAGES if importlib.util.find_spec(m) is None]
+    rows.append((not missing, True, "packages installed" if not missing else "packages missing: " + ", ".join(missing) + " (run Setup.bat)"))
+    rows.append((importlib.util.find_spec("tkinter") is not None, True,
+                 "tkinter (the RIPPER button, panel and pop-up)" if importlib.util.find_spec("tkinter") else
+                 "tkinter missing: reinstall Python and keep the 'tcl/tk and IDLE' option ticked"))
+    for tool in ("ffmpeg", "ffprobe"):
+        found = shutil.which(tool)
+        rows.append((bool(found), True, f"{tool} found" if found else f"{tool} not found (Setup.bat installs it with winget, or see the README)"))
+    browser = find_chromium()
+    rows.append((bool(browser), False, "Chrome/Edge found (the Ripper opens in its own window)" if browser else
+                 "no Chrome/Edge: the page will open in your default browser instead"))
+    if app_is_running(port):
+        rows.append((True, False, f"Ripped Ripper is running right now (port {port})"))
+    else:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                rows.append((False, True, f"port {port} is used by another program"))
+        except OSError:
+            rows.append((True, True, f"port {port} is free"))
+    dirs = traktor_dirs()
+    if not dirs:
+        rows.append((True, False, "Traktor Pro not found in Program Files (the Ripper still works on its own)"))
+    else:
+        installed = traktor_mod_installed(dirs[0])
+        rows.append((installed, False, f"{dirs[0].name}: deck-sync mod " + ("installed" if installed else
+                     "not installed (optional: double-click traktor_mod\\Install Traktor Mod.bat)")))
+    return rows
+
+
+def print_environment_report(port=PORT) -> bool:
+    """Print the report; True when everything required is fine."""
+    all_ok = True
+    for ok, required, text in environment_report(port):
+        mark = "ok" if ok else ("!!" if required else "--")
+        all_ok = all_ok and (ok or not required)
+        print(f"  [{mark}] {text}")
+    print("Everything needed is in place." if all_ok else "Something needed is missing: see the [!!] lines above.")
+    return all_ok
 
 
 def current_branch(root=ROOT):
@@ -165,7 +267,20 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dev", action="store_true", help="auto-reload server and browser (development only)")
     ap.add_argument("--no-window", action="store_true", help="do not open a window, just serve")
+    ap.add_argument("--check", action="store_true", help="report what is ready and what is missing, then exit")
     args = ap.parse_args(argv)
+
+    refresh_windows_path()
+    if args.check:
+        sys.exit(0 if print_environment_report() else 1)
+    if uvicorn is None:
+        sys.exit("Some packages are missing, so the Ripper cannot start yet. Run Setup.bat (it installs everything), "
+                 "then start the Ripper again.")
+    if app_is_running():   # a second double-click just brings up the window of the one that is already running
+        print("Ripped Ripper is already running; opening its window.")
+        if not args.no_window:
+            open_page(APP_URL)
+        return
 
     for line in checkout_report():
         print(line)
