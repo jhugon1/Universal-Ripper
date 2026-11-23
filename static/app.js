@@ -567,5 +567,5 @@
   setInterval(loadQueue, 10000);   // a safety net; the live events normally arrive first
   requestAnimationFrame(frame);
   const splash = $('#splash');
-  if (splash) setTimeout(() => { splash.classList.add('gone'); setTimeout(() => splash.remove(), 450); }, 1000);
+  if (splash) setTimeout(() => { splash.classList.add('gone'); setTimeout(() => splash.remove(), 1300); }, 2600);   // shown for 2.6 s, then a 1.2 s fade
 })();
