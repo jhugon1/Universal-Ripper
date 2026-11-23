@@ -35,17 +35,23 @@
       <div class="deck-btns">
         <span class="dbtn dbtn-sync">SYNC</span>
         <span class="dbtn dbtn-master">MASTER</span>
-        <div class="deck-keybox"><span class="deck-keylabel">KEY</span> <span class="deck-key"></span></div>
+        <div class="deck-strip"><i></i><i></i><i></i></div>
         <button class="deck-reset" type="button" title="Forget the deck state shown here" style="visibility: hidden">Reset</button>
+        <span class="dbtn dbtn-nudge">&#9666;|</span>
+        <span class="dbtn dbtn-nudge">|&#9656;</span>
       </div>
       <div class="deck-wave" role="img" aria-label="Waveform">
         <canvas class="wave-main"></canvas>
         <div class="deck-playhead"></div>
       </div>
-      <div class="deck-over" role="img" aria-label="Track progress">
-        <canvas class="wave-over"></canvas>
-        <div class="bar-fill"></div>
-        <div class="deck-playhead over-head"></div>
+      <div class="deck-overrow">
+        <span class="dbtn dbtn-start">|&#9666;</span>
+        <div class="deck-over" role="img" aria-label="Track progress">
+          <canvas class="wave-over"></canvas>
+          <div class="bar-fill"></div>
+          <div class="deck-playhead over-head"></div>
+        </div>
+        <span class="dbtn dbtn-key over-key"></span>
       </div>
       <div class="deck-times"></div>
     </div>

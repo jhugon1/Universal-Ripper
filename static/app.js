@@ -61,7 +61,7 @@
   $$('.deck').forEach((card) => {
     decks[card.dataset.deck] = {
       card, state: $('.deck-state', card), title: $('.deck-title', card), artist: $('.deck-artist', card),
-      time: $('.deck-time', card), bpm: $('.deck-bpm', card), key: $('.deck-key', card), fill: $('.bar-fill', card),
+      time: $('.deck-time', card), bpm: $('.deck-bpm', card), key: $('.over-key', card), sync: $('.dbtn-sync', card), fill: $('.bar-fill', card),
       total: $('.deck-total', card), tempo: $('.deck-tempo', card), master: $('.dbtn-master', card), head: $('.deck-playhead', card), mainCv: $('.wave-main', card), overCv: $('.wave-over', card), over: $('.over-head', card), waveKey: '', cols: null, overDirty: true, trackLen: 0, frac: null,
       times: $('.deck-times', card), reset: $('.deck-reset', card),
     };
@@ -120,14 +120,15 @@
       setText(ui.bpm, d.bpm ? (d.bpm * tempo).toFixed(2) : '---.--');
       const pc = (tempo - 1) * 100;
       setText(ui.tempo, (pc >= 0 ? '+' : MINUS) + Math.abs(pc).toFixed(1) + '%');
-      setText(ui.key, d.key || DASH);
+      setText(ui.key, (d.raw && d.raw.resultingKey) || d.key || DASH);
       setStyle(ui.fill, 'width', pct); setStyle(ui.over, 'left', pct);
-      ui.trackLen = len; ui.frac = len ? Math.min(1, Math.max(0, e / len)) : null;
+      ui.trackLen = len; ui.shownElapsed = e; ui.frac = len ? Math.min(1, Math.max(0, e / len)) : null;
       setText(ui.times, '');
     }
     const isMaster = snap.master && snap.master.deck === letter && st !== 'empty';
     ui.master.classList.toggle('on', !!isMaster);
-    paintOverview(ui); paintMain(ui, ui.frac);
+    ui.sync.classList.toggle('on', !!(d.raw && d.raw.isSynced) && st !== 'empty');
+    paintOverview(ui); paintMain(ui, ui.frac, d, ui.shownElapsed || 0);
     setText(ui.state, stateText); setStyle(ui.state, 'color', stateColor);
     setStyle(ui.time, 'color', timeColor); setStyle(ui.fill, 'background', timeColor || C.accent);
     setStyle(ui.title, 'color', st === 'empty' ? C.faint : '');
@@ -173,17 +174,37 @@
     if (!ui.cols) return;
     for (let x = 0; x < cv.width; x++) paintColumn(g, ui.cols, Math.floor(x / cv.width * WAVE_COLS), x, cv.height / 2, cv.height / 2 - 1);
   }
-  function paintMain(ui, frac) {
+  const CUE_COLORS = { cue: '#3FB0FF', fadeIn: '#FF8A4C', fadeOut: '#FF8A4C', load: '#FFD23F', grid: '#FFFFFF', loop: '#3DD68C' };
+  function paintMain(ui, frac, d, elapsed) {
     const cv = ui.mainCv; fitCanvas(cv);
     const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
     if (!ui.cols || frac == null) return;
-    const perCol = (ui.trackLen || 1) / WAVE_COLS, span = VIEW_SECONDS / perCol;   // columns visible
+    const len = ui.trackLen || 1, perCol = len / WAVE_COLS, span = VIEW_SECONDS / perCol;   // columns visible
     const centre = frac * WAVE_COLS, step = span / cv.width;
     for (let x = 0; x < cv.width; x++) {
       const col = Math.floor(centre - span / 2 + x * step);
       if (col < 0 || col >= WAVE_COLS) continue;
       paintColumn(g, ui.cols, col, x, cv.height / 2, cv.height / 2 - 2);
     }
+    const pxPerSec = cv.width / VIEW_SECONDS, xAt = (t) => cv.width / 2 + (t - elapsed) * pxPerSec;
+    const raw = (d && d.raw) || {}, bpm = d && d.bpm, grid = Number(raw.gridOffset);
+    if (bpm > 0 && Number.isFinite(grid)) {            // beat grid: a thin line on every beat, brighter on every 4th
+      const period = 60 / bpm, first = Math.ceil((elapsed - VIEW_SECONDS / 2 - grid) / period);
+      for (let k = first; ; k++) {
+        const t = grid + k * period, x = xAt(t);
+        if (x > cv.width) break;
+        g.fillStyle = (k % 4 === 0) ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.16)';
+        g.fillRect(Math.round(x), 0, 1, cv.height);
+      }
+    }
+    [['prevCuePos', 'prevCueType'], ['nextCuePos', 'nextCueType']].forEach(([pk, tk]) => {   // the cues the mod reports
+      const t = Number(raw[pk]);
+      if (raw[pk] == null || !Number.isFinite(t)) return;
+      const x = Math.round(xAt(t)); if (x < -6 || x > cv.width + 6) return;
+      g.fillStyle = CUE_COLORS[raw[tk]] || '#3FB0FF';
+      g.fillRect(x, 0, 1, cv.height);
+      g.beginPath(); g.moveTo(x - 5, cv.height); g.lineTo(x + 5, cv.height); g.lineTo(x, cv.height - 9); g.fill();
+    });
   }
 
   function frame() {
