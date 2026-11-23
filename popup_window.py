@@ -19,6 +19,10 @@ STEP_MS = 16
 BG = "#040201"   # the wordmark picture's own background, so it blends in
 EDGE = "#5A4512"
 HERE = os.path.dirname(os.path.abspath(__file__))
+TOP_OFFSET = 46    # from the top of Traktor's window: the header strip, then the master-clock box (AUTO / MASTER / QUANT / BOOST ...)
+POPUP_HEIGHT = 126 # 46..172: covers the box (it spans about 86..168) and stops above the mixer knobs (they start near 176)
+MIN_WIDTH = 276    # the box is about 248 wide and centred on Traktor's window: the pop-up always covers all of it
+COVER = 100        # album cover (or the Ripper face) on the left
 
 
 def traktor_rect():
@@ -51,6 +55,30 @@ def make_click_through(window):
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | LAYERED | TRANSPARENT | TOOLWINDOW | NOACTIVATE)
 
 
+def load_cover(source, size):
+    """A square cover picture: from an image file, or the cover embedded in an audio file; the Ripper face when there is none."""
+    import io
+
+    from PIL import Image
+    img = None
+    if source and os.path.isfile(source):
+        try:
+            if source.lower().endswith((".jpg", ".jpeg", ".png")):
+                img = Image.open(source)
+            else:
+                from mutagen.id3 import ID3
+                frames = ID3(source).getall("APIC")
+                img = Image.open(io.BytesIO(frames[0].data)) if frames else None
+        except Exception:
+            img = None
+    if img is None:
+        img = Image.open(os.path.join(HERE, "static", "ripped_face.jpg"))
+    img = img.convert("RGB")
+    side = min(img.size)
+    left, top = (img.width - side) // 2, (img.height - side) // 2
+    return img.crop((left, top, left + side, top + side)).resize((size, size), Image.LANCZOS)
+
+
 def ellipsize(text, limit=48):
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
@@ -60,6 +88,7 @@ def main(argv=None):
     ap.add_argument("--title", required=True)
     ap.add_argument("--lead", default="")
     ap.add_argument("--sub", default="")
+    ap.add_argument("--cover", default="", help="an audio file with an embedded cover, or an image file; the Ripper face is used when there is none")
     args = ap.parse_args(argv)
     if sys.platform != "win32":
         return 0
@@ -73,26 +102,33 @@ def main(argv=None):
     inner = tkinter.Frame(root, bg=BG)
     inner.pack(fill="both", expand=True, padx=1, pady=1)
 
-    head = tkinter.Frame(inner, bg=BG)
-    head.pack(anchor="w", padx=18, pady=(14, 0))
-    inner.pack_configure(ipadx=0)
+    cover = load_cover(args.cover, COVER)
+    cover_photo = ImageTk.PhotoImage(cover)
+    tkinter.Label(inner, image=cover_photo, bg=BG, bd=0).pack(side="left", padx=(12, 4), pady=12)
+
+    text = tkinter.Frame(inner, bg=BG)
+    text.pack(side="left", fill="both", expand=True, padx=(8, 16))
+    tkinter.Frame(text, bg=BG).pack(expand=True)                                  # centres the text block vertically
+    head = tkinter.Frame(text, bg=BG)
+    head.pack(anchor="w")
     if args.lead:
-        tkinter.Label(head, text=args.lead, bg=BG, fg="#ECEDEE", font=("Segoe UI Semibold", 22)).pack(side="left", padx=(0, 10))
+        tkinter.Label(head, text=args.lead, bg=BG, fg="#ECEDEE", font=("Segoe UI Semibold", 20)).pack(side="left", padx=(0, 10))
     mark = Image.open(os.path.join(HERE, "static", "ripped_wordmark.png")).convert("RGBA")
-    height = 46
+    height = 36
     mark = mark.resize((round(mark.width * height / mark.height), height), Image.LANCZOS)
     photo = ImageTk.PhotoImage(mark)
     tkinter.Label(head, image=photo, bg=BG).pack(side="left")
-    tkinter.Label(inner, text=ellipsize(args.title), bg=BG, fg="#ECEDEE", font=("Segoe UI Semibold", 15), anchor="w").pack(fill="x", padx=18, pady=(6, 0))
+    tkinter.Label(text, text=ellipsize(args.title, 40), bg=BG, fg="#ECEDEE", font=("Segoe UI Semibold", 13), anchor="w").pack(fill="x", pady=(2, 0))
     if args.sub:
-        tkinter.Label(inner, text=args.sub, bg=BG, fg="#9BA0A8", font=("Segoe UI", 10), anchor="w").pack(fill="x", padx=18, pady=(0, 10))
+        tkinter.Label(text, text=ellipsize(args.sub, 46), bg=BG, fg="#9BA0A8", font=("Segoe UI", 10), anchor="w").pack(fill="x")
+    tkinter.Frame(text, bg=BG).pack(expand=True)
 
     root.update_idletasks()
-    width, height_ = root.winfo_reqwidth() + 36, root.winfo_reqheight() + 16   # fit the content, with some air
+    width, height_ = max(MIN_WIDTH, root.winfo_reqwidth() + 8), POPUP_HEIGHT   # as wide as the text needs, never narrower than the box it must cover
     rect = traktor_rect()
     if rect:
         left, top, rw, rh = rect
-        x, y = left + (rw - width) // 2, top + max(60, rh // 5)
+        x, y = left + (rw - width) // 2, top + TOP_OFFSET
     else:
         x, y = (root.winfo_screenwidth() - width) // 2, root.winfo_screenheight() // 4
     root.geometry(f"{width}x{height_}+{x}+{y}")
@@ -102,11 +138,11 @@ def main(argv=None):
     steps_in, steps_out = max(1, FADE_IN_MS // STEP_MS), max(1, FADE_OUT_MS // STEP_MS)
 
     def fade_in(i=0):
-        root.attributes("-alpha", min(0.96, 0.96 * (i + 1) / steps_in))
+        root.attributes("-alpha", min(1.0, (i + 1) / steps_in))
         root.after(STEP_MS, fade_in, i + 1) if i + 1 < steps_in else root.after(HOLD_MS, fade_out)
 
     def fade_out(i=0):
-        root.attributes("-alpha", max(0.0, 0.96 * (1 - (i + 1) / steps_out)))
+        root.attributes("-alpha", max(0.0, 1 - (i + 1) / steps_out))
         root.after(STEP_MS, fade_out, i + 1) if i + 1 < steps_out else root.destroy()
 
     fade_in()

@@ -188,8 +188,16 @@ def test_ripping_the_same_video_again(client, tmp_path):
     c, _ = client
     first = rip(c, 1)
     first_item_with(c, "ready")
-    again = rip(c, 1)  # still in tonight's queue
-    assert again["kind"] == "in_queue" and again["item"]["id"] == first["item"]["id"] and len(items_of(c)) == 1
+    shown = []
+    import app as app_module
+    real_popup = app_module.popup_show
+    app_module.popup_show = lambda title, lead="", sub="", video_id=None: shown.append((lead, sub, video_id))
+    try:
+        again = rip(c, 1)  # still in tonight's queue
+        assert again["kind"] == "in_queue" and again["item"]["id"] == first["item"]["id"] and len(items_of(c)) == 1
+        assert shown == [("Already", "Already in tonight's queue", "vid00000001")]   # the "Already RIPPED" pop-up shows for this too
+    finally:
+        app_module.popup_show = real_popup
 
     post(c, "remove", id=first["item"]["id"])  # out of the queue, but the rip is in the library for good
     third = rip(c, 1)

@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 from pathlib import Path
 
@@ -177,6 +178,9 @@ def test_popup_command_and_switches(tmp_path, monkeypatch):
     from ripper_queue import popup, store
     cmd = popup.command("A - B", "Already", "Added")
     assert cmd[1].endswith("popup_window.py") and cmd[2:] == ["--title", "A - B", "--lead", "Already", "--sub", "Added"]
+    assert popup.command("T", cover="C:/x/y.mp3")[-2:] == ["--cover", "C:/x/y.mp3"]
+    if sys.platform == "win32":
+        assert os.path.basename(cmd[0]).lower() in ("pythonw.exe", "python.exe")   # pythonw whenever it exists: no console, no flash
     conn = store.open_db(str(tmp_path / "t.db"))
     store.ensure_schema(conn)
     monkeypatch.setenv("RIPPER_POPUP", "1")
@@ -195,11 +199,14 @@ def test_popup_endpoint_and_triggers(tmp_path, monkeypatch):
     import app as app_module
     from fastapi.testclient import TestClient
     monkeypatch.setenv("RIPPER_DB", str(tmp_path / "own.db"))
-    shown = []
-    monkeypatch.setattr(app_module.queue_popup, "show", lambda title, lead="", sub="", conn=None: shown.append((title, lead, sub)) or True)
+    shown, covers = [], []
+    monkeypatch.setattr(app_module.queue_popup, "show", lambda title, lead="", sub="", conn=None, cover="": shown.append((title, lead, sub)) or covers.append(cover) or True)
     with TestClient(app_module.app) as c:
         assert c.get("/api/popup").json() == {"on": True}
         assert c.post("/api/popup", data={"on": "false"}).json() == {"on": False}
         assert c.post("/api/popup", data={"on": "true"}).json() == {"on": True}
         app_module.popup_show("Song", "Already", "Added to tonight's folder")
         assert shown == [("Song", "Already", "Added to tonight's folder")]
+        assert covers == [""]   # no library entry for this video: the pop-up falls back to the Ripper face
+        app_module.popup_show("Song", "", "Artist", "unknown-id")
+        assert covers == ["", ""]

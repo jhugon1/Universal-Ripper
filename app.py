@@ -259,12 +259,14 @@ class YtBackend:
         return out
 
 
-def popup_show(title, lead="", sub=""):
-    """The RIPPED pop-up over Traktor (a separate window; off when switched off on the page). Never raises."""
+def popup_show(title, lead="", sub="", video_id=None):
+    """The RIPPED pop-up over Traktor (a separate window; off when switched off on the page). Never raises.
+    With a video id the pop-up shows that rip's own cover (read from its library file), otherwise the Ripper face."""
     try:
         conn = queue_store.open_db(db_file())
         try:
-            queue_popup.show(title, lead=lead, sub=sub, conn=conn)
+            entry = library.find(conn, video_id) if video_id else None
+            queue_popup.show(title, lead=lead, sub=sub, conn=conn, cover=(entry or {}).get("path") or "")
         finally:
             conn.close()
     except Exception:
@@ -286,7 +288,7 @@ async def on_queue_result(item_id, outcome):
                          "video_id": item["video_id"], "title": item["title"], "artist": item["artist"],
                          "message": item["error"] if outcome == "failed" else None})
     if item and outcome == "ready":
-        await run_in_threadpool(popup_show, item["title"], "", item["artist"])
+        await run_in_threadpool(popup_show, item["title"], "", item["artist"], item["video_id"])
     await broadcast({"event": "queue_update", "id": item_id, "status": outcome})
 
 
@@ -367,7 +369,9 @@ def rip_track(video_id: str = Form(...), artist: str = Form(...), title: str = F
     if kind == "new":
         queue_worker.wake_threadsafe()
     if kind == "duplicate":
-        popup_show(title, "Already", "Added to tonight's folder")
+        popup_show(title, "Already", "Added to tonight's folder", video_id)
+    elif kind == "in_queue":
+        popup_show(title, "Already", "Already in tonight's queue", video_id)
     if kind in ("new", "duplicate", "error"):
         notify({"event": "queue_update", "status": "added"})
     return JSONResponse({"kind": kind, "item": public_item(outcome["item"]), "message": outcome.get("message"),
@@ -563,10 +567,6 @@ def deck_waveform(deck: str):
     return Response(content=queue_waveform.pack(got[1]), media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
 
 
-@app.get("/api/library/cover/{video_id}")
-def library_cover(video_id: str):
-    """The cover art embedded in the library file for this video (the page falls back to its own picture)."""
-    conn = queue_store.open_db(db_file())
 @app.get("/api/deck_cover/{deck}")
 def deck_cover(deck: str):
     """The cover art embedded in the file loaded on a deck (404 when there is none)."""
@@ -579,6 +579,10 @@ def deck_cover(deck: str):
     return Response(content=cover[0], media_type=cover[1], headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/library/cover/{video_id}")
+def library_cover(video_id: str):
+    """The cover art embedded in the library file for this video (the page falls back to its own picture)."""
+    conn = queue_store.open_db(db_file())
     try:
         entry = library.find(conn, video_id)
     finally:

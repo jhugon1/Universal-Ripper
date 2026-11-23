@@ -14,6 +14,18 @@ SCRIPT = Path(__file__).resolve().parent.parent / "popup_window.py"
 OFF_KEY = "popup_off"
 
 
+def gui_python() -> str:
+    """The interpreter to start windows with. On Windows that is pythonw.exe (next to python.exe), which never opens a console.
+    A venv's python.exe is only a launcher that starts the real interpreter as a child; started without a console of its own,
+    that child makes Windows open a new terminal window for a moment, which is what this avoids."""
+    exe = Path(sys.executable)
+    if sys.platform == "win32":
+        windowless = exe.with_name("pythonw.exe")
+        if windowless.is_file():
+            return str(windowless)
+    return str(exe)
+
+
 def enabled(conn=None) -> bool:
     if os.environ.get("RIPPER_POPUP", "1") == "0":
         return False
@@ -22,22 +34,24 @@ def enabled(conn=None) -> bool:
     return True
 
 
-def command(title: str, lead: str = "", sub: str = "") -> list:
-    cmd = [sys.executable, str(SCRIPT), "--title", title]
+def command(title: str, lead: str = "", sub: str = "", cover: str = "") -> list:
+    cmd = [gui_python(), str(SCRIPT), "--title", title]
     if lead:
         cmd += ["--lead", lead]
     if sub:
         cmd += ["--sub", sub]
+    if cover:
+        cmd += ["--cover", cover]
     return cmd
 
 
-def show(title: str, lead: str = "", sub: str = "", conn=None) -> bool:
+def show(title: str, lead: str = "", sub: str = "", conn=None, cover: str = "") -> bool:
     """Launch the pop-up; True when it was started. Never raises."""
     if not enabled(conn) or not title or sys.platform != "win32":
         return False
     try:
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen(command(title, lead, sub), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)   # not DETACHED_PROCESS: that is what made the launcher open a terminal
+        subprocess.Popen(command(title, lead, sub, cover), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
         return True
     except OSError:
