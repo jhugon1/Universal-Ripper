@@ -27,6 +27,9 @@ _DECK_FIELDS = {
     "filePath": "file_path", "title": "title", "artist": "artist", "bpm": "bpm", "tempo": "tempo",
     "key": "key", "trackLength": "track_length", "elapsedTime": "elapsed", "isPlaying": "is_playing",
 }
+# raw mod fields the page shows (beat grid, sync, cue markers, shifted key); kept across restarts because the mod
+# only sends them when a track is loaded
+KEEP_RAW = ("gridOffset", "isSynced", "isKeyLockOn", "resultingKey", "nextCuePos", "nextCueType", "prevCuePos", "prevCueType")
 _STR_FIELDS = {"file_path", "title", "artist", "key"}
 _NUM_FIELDS = {"bpm", "tempo", "track_length", "elapsed"}
 
@@ -258,7 +261,8 @@ class TraktorState:
     def dump(self):
         """Everything needed to restore after a restart. Includes file paths: keep it in the local DB only."""
         return {
-            "decks": {k: {f: v for f, v in d.items() if f != "raw"} for k, d in self.decks.items()},
+            "decks": {k: dict({f: v for f, v in d.items() if f != "raw"}, raw_kept={f: d["raw"][f] for f in KEEP_RAW if f in d["raw"]})
+                      for k, d in self.decks.items()},
             "channels": {k: {f: v for f, v in c.items() if f != "raw"} for k, c in self.channels.items()},
             "master": dict(self.master),
             "last_played": self.last_played,
@@ -287,6 +291,9 @@ class TraktorState:
                         value = blank[field]
                 d[field] = value
             d["restored"] = bool(d["file_path"])
+            kept = saved.get("raw_kept")
+            if isinstance(kept, dict) and d["file_path"]:
+                d["raw"].update({f: v for f, v in kept.items() if f in KEEP_RAW and (v is None or isinstance(v, (str, int, float, bool)))})
         for channel_id, saved in (data.get("channels") or {}).items():
             if channel_id in self.channels and isinstance(saved, dict):
                 ch = self.channels[channel_id]

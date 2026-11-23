@@ -42,14 +42,16 @@ def list_stripes(root):
     return out
 
 
-def pick_stripe(stripes, loaded_at, taken=(), slack=5.0):
-    """The stripe touched closest after the track was loaded (not one already given to another track), or None."""
+def pick_stripe(stripes, loaded_at, taken=(), before=20.0, after=30.0):
+    """The stripe touched closest to the moment the track was loaded (Traktor touches it a few seconds before or
+    after the mod reports the load), not one already given to another track; None when nothing is close enough."""
     best = None
     for key, (stamp, _path) in stripes.items():
-        if key in taken or stamp < loaded_at - slack:
+        gap = stamp - loaded_at
+        if key in taken or gap < -before or gap > after:
             continue
-        if best is None or stamp < best[0]:
-            best = (stamp, key)
+        if best is None or abs(gap) < best[0]:
+            best = (abs(gap), key)
     return best[1] if best else None
 
 

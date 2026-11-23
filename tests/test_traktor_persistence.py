@@ -167,3 +167,12 @@ def test_reset_decks_clears_the_saved_copy_but_not_what_was_played(app_env):
         assert saved["decks"]["A"]["file_path"] is None  # a restart would not bring the fake deck back
         assert store.get_item(conn, item["id"])["status"] == "played"  # played is final
         conn.close()
+
+
+def test_beat_grid_sync_and_cue_fields_survive_a_restart():
+    a = TraktorState()
+    a.apply("deckLoaded/A", {"filePath": "C:/m/x.mp3", "title": "X", "gridOffset": 0.123, "isSynced": True,
+                             "nextCuePos": 42.5, "nextCueType": "cue", "somethingElse": "private"})
+    b = TraktorState()
+    b.load(a.dump())
+    assert b.decks["A"]["raw"] == {"gridOffset": 0.123, "isSynced": True, "nextCuePos": 42.5, "nextCueType": "cue"}

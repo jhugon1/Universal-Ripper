@@ -85,6 +85,8 @@ def test_stripes_are_read_and_matched_to_the_track_loaded_at_that_time(tmp_path)
     found = stripes.list_stripes(str(tmp_path))
     assert set(found) == {"OLDKEY", "NEWKEY"}
     assert stripes.pick_stripe(found, loaded_at=1999) == "NEWKEY"          # touched right after the load
+    assert stripes.pick_stripe(found, loaded_at=2006) == "NEWKEY"          # or a few seconds BEFORE the mod reported it
+    assert stripes.pick_stripe(found, loaded_at=1500) is None              # nothing touched near that moment
     assert stripes.pick_stripe(found, loaded_at=1999, taken={"NEWKEY"}) is None   # not one another track already has
     cols = stripes.read_columns(found["NEWKEY"][1], 16384)
     assert len(cols) == 16384 * 4 and max(cols[3::4]) > 200
