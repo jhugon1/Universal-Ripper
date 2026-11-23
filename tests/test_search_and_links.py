@@ -134,3 +134,39 @@ def test_extra_folder_endpoints_pick_remember_and_clear(tmp_path, monkeypatch):
         monkeypatch.setattr(app_module, "choose_folder", lambda: None)            # dialog cancelled: keeps the old one
         assert c.post("/api/extra_folder/pick").json()["name"] == "My Tracks"
         assert c.post("/api/extra_folder/clear").json() == {"set": False, "name": None}
+
+
+def test_two_videos_with_the_same_name_finishing_together_never_overwrite_each_other(tmp_path, monkeypatch):
+    import threading
+    import time
+    from ripper_queue import files, rip, store
+    monkeypatch.setenv("RIPPER_LIBRARY_DIR", str(tmp_path / "Library"))
+    real_free = files.free_path
+
+    def slow_free(path):  # widen the window between choosing a name and writing the file
+        chosen = real_free(path)
+        time.sleep(0.15)
+        return chosen
+
+    monkeypatch.setattr(files, "free_path", slow_free)
+    monkeypatch.setattr(files, "tag_file", lambda *a, **k: None)
+    monkeypatch.setattr(files, "read_length", lambda p: 1.0)
+    monkeypatch.setattr(files, "fetch_cover", lambda u: None)
+
+    class Backend:
+        def download(self, video_id, folder):
+            out = folder / "x.mp3"
+            out.write_bytes(video_id.encode())
+            return out
+
+    def one(video_id):
+        conn = store.open_db(str(tmp_path / "t.db"))
+        store.ensure_schema(conn)
+        rip.ensure_in_library(conn, Backend(), video_id=video_id, artist="Band", title="Song")
+
+    threads = [threading.Thread(target=one, args=(v,)) for v in ("versionAAAA", "versionBBBB")]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    songs = sorted((tmp_path / "Library").glob("*.mp3"))
+    assert [p.name for p in songs] == ["Band - Song (2).mp3", "Band - Song.mp3"]
+    assert sorted(p.read_bytes() for p in songs) == [b"versionAAAA", b"versionBBBB"]   # both survive

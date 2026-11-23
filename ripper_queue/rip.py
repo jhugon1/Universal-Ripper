@@ -41,6 +41,9 @@ def video_lock(video_id):
         return _locks.setdefault(video_id, threading.Lock())
 
 
+_library_write = threading.Lock()  # choosing a free library name and moving the file in is one step (no overwriting)
+
+
 def ensure_in_library(conn, backend, *, video_id, artist, title, album=None, thumbnail=None):
     """The library entry for this video: found, or downloaded ONCE into the library as `Artist - Title.mp3`,
     tagged (title, artist, album, cover, video id)."""
@@ -56,10 +59,11 @@ def ensure_in_library(conn, backend, *, video_id, artist, title, album=None, thu
             length = files.read_length(audio)
             folder = library.library_dir()
             folder.mkdir(parents=True, exist_ok=True)
-            target = files.free_path(folder / f"{track_basename(artist, title)}.mp3")
-            part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
-            shutil.copyfile(audio, part)
-            os.replace(part, target)
+            with _library_write:  # two videos with the same artist and title must not pick the same name
+                target = files.free_path(folder / f"{track_basename(artist, title)}.mp3")
+                part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
+                shutil.copyfile(audio, part)
+                os.replace(part, target)
             return library.add(conn, video_id=video_id, artist=artist, title=title, album=album, length_s=length,
                                path=target)
         finally:
