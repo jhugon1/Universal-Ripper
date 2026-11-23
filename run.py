@@ -127,6 +127,40 @@ def _open_when_ready(url):
     open_page(url)
 
 
+def _rip_button_command():
+    from ripper_queue.popup import gui_python
+    return [gui_python(), str(ROOT / "rip_button_window.py"), "--parent", str(os.getpid()), "--url", APP_URL]
+
+
+def _spawn_rip_button():
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.Popen(_rip_button_command(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+
+
+def start_rip_button():
+    """The floating RIPPER button over Traktor (its own process; it exits when this app does). A watchdog starts it again if it ever
+    dies (at most 5 times a minute). Windows only; RIPPER_RIP_BUTTON=0 turns it off."""
+    if sys.platform != "win32" or os.environ.get("RIPPER_RIP_BUTTON") == "0":
+        return None
+    proc = _spawn_rip_button()
+
+    def watch(current):
+        starts = [time.monotonic()]
+        while True:
+            time.sleep(3)
+            if current.poll() is None:
+                continue
+            now = time.monotonic()
+            starts = [t for t in starts if now - t < 60]
+            if len(starts) >= 5:   # it keeps dying: stop, rather than loop
+                return
+            starts.append(now)
+            current = _spawn_rip_button()
+
+    threading.Thread(target=watch, args=(proc,), daemon=True).start()
+    return proc
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dev", action="store_true", help="auto-reload server and browser (development only)")
@@ -146,6 +180,7 @@ def main(argv=None):
 
     if not args.no_window:
         threading.Thread(target=_open_when_ready, args=(APP_URL,), daemon=True).start()
+        start_rip_button()
     uvicorn.run("app:app", **uvicorn_kwargs(args.dev))
 
 
