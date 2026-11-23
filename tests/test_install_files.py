@@ -43,7 +43,8 @@ def test_requirements_cover_every_import_the_app_makes():
     assert "pillow" in have   # the pop-up, the button and the panel all draw with it
 
 
-@pytest.mark.parametrize("path", ["Setup.bat", "Start Ripper.bat", "setup.ps1", "traktor_mod/install_traktor_mod.ps1",
+@pytest.mark.parametrize("path", ["Setup.bat", "Start Ripper.bat", "setup.ps1", "autostart.ps1", "Turn on auto-start.bat",
+                                  "Turn off auto-start.bat", "traktor_mod/install_traktor_mod.ps1",
                                   "traktor_mod/Install Traktor Mod.bat", "traktor_mod/Remove Traktor Mod.bat"])
 def test_windows_scripts_are_ascii_with_crlf(path):
     raw = (ROOT / path).read_bytes()

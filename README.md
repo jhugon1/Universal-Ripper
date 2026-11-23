@@ -13,12 +13,18 @@ A companion for DJs who play from **Traktor Pro**. Search for a song (or paste a
 You need **Python 3.10 or newer** from [python.org](https://www.python.org/downloads/): on the first installer screen tick *Add python.exe to PATH*, and leave *tcl/tk and IDLE* ticked. You also need an internet connection. Everything else is installed for you.
 
 1. **Get the files**: on GitHub press *Code > Download ZIP* and unzip it somewhere simple, for example `C:\RippedRipper` (not inside Program Files). Or `git clone https://github.com/jhugon1/Universal-Ripper.git`.
-2. **Double-click `Setup.bat`.** It creates a private Python environment, installs the packages, installs **ffmpeg** with winget if you do not have it (it asks first), puts a **Ripped Ripper** icon on your Desktop, and finishes with a checklist. It takes one or two minutes, and you can run it again whenever you like.
+2. **Double-click `Setup.bat`.** It creates a private Python environment, installs the packages, installs **ffmpeg** with winget if you do not have it (it asks first), puts a **Ripped Ripper** icon on your Desktop, asks whether the Ripper should **start by itself when Traktor opens** (recommended), and finishes with a checklist. It takes one or two minutes, and you can run it again whenever you like.
 3. **Double-click the Ripped Ripper icon.** The Ripper opens in its own window.
 
 > If Windows says *"Windows protected your PC"* the first time (files from a downloaded ZIP get this), choose *More info > Run anyway*.
 
 Closing the small minimised window that appears in your taskbar quits the Ripper (and the RIPPER button). Starting it a second time while it runs just brings its window back.
+
+### Starts with Traktor
+
+If you said yes to auto-start, you do not need the icon at all: when Traktor opens, the Ripper starts quietly in the background (the RIPPER button appears on Traktor's window, and the pop-up works). The big window stays closed until you click RIPPER > *Open full Ripper*. A little after Traktor closes, the Ripper quits by itself, and it never does that in the middle of a download. If you close the Ripper yourself while Traktor is open, it stays closed until Traktor is opened again. A Ripper you started with the icon is never closed for you.
+
+A tiny helper (`traktor_watcher.py`, no window, almost no CPU) does the watching; it is started from your Windows Startup folder. Turn it off or on any time with `Turn off auto-start.bat` / `Turn on auto-start.bat`.
 
 ## Using it with Traktor
 
@@ -46,10 +52,11 @@ Change any of them with the environment variables `RIPPER_LIBRARY_DIR`, `RIPPER_
 
 - **"What is wrong?"** Run `Setup.bat` again: it ends with a checklist, and `.venv\Scripts\python run.py --check` prints the same one. Lines marked `[!!]` are the problems.
 - **ffmpeg not found**: install it from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (the *essentials* build), add its `bin` folder to PATH, and run Setup again.
+- **The Ripper did not start with Traktor**: run `Turn on auto-start.bat` once, or sign out and in. `%LOCALAPPDATA%\RippedRipper\watcher.log` says what the watcher saw.
 - **The RIPPER button is missing**: it only shows while Traktor's window is open and not minimised. If it ever misbehaves, `%LOCALAPPDATA%\RippedRipper\rip_button.log` says why.
 - **Spotify**: public playlists work without any setup (the first 100 tracks). Private playlists need your own free Spotify developer app: the page walks you through it.
 - **Updating**: `git pull` (or download the ZIP again), then run `Setup.bat` once more.
-- **Uninstalling**: run `Remove Traktor Mod.bat` if you installed the mod, then delete the Ripper folder and the Desktop icon. Your music stays where it is.
+- **Uninstalling**: run `Remove Traktor Mod.bat` if you installed the mod, run `Turn off auto-start.bat`, then delete the Ripper folder and the Desktop icon. Your music stays where it is.
 
 ## For developers
 

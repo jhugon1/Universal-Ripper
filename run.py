@@ -5,6 +5,8 @@
                             when .py, template or static files change
   python run.py --no-window start the server only (open http://127.0.0.1:8000/ yourself)
   python run.py --check     report what is ready and what is missing (Python, packages, ffmpeg, browser, Traktor), then exit
+  python run.py --background  what the Traktor watcher starts: no big window (the RIPPER button opens it), and it quits by
+                            itself a little after Traktor closes (never in the middle of a download)
 """
 import argparse
 import importlib.util
@@ -24,7 +26,7 @@ try:
 except ImportError:   # not set up yet: `python run.py --check` still works and says what to do
     uvicorn = None
 
-PORT = 8000
+PORT = int(os.environ.get("RIPPER_PORT") or 8000)   # 8000 unless RIPPER_PORT says otherwise (tests); Spotify login expects 8000
 APP_URL = f"http://127.0.0.1:{PORT}/"  # 127.0.0.1, not localhost: the Spotify login returns to this exact address
 ROOT = Path(__file__).resolve().parent
 
@@ -124,6 +126,50 @@ def print_environment_report(port=PORT) -> bool:
         print(f"  [{mark}] {text}")
     print("Everything needed is in place." if all_ok else "Something needed is missing: see the [!!] lines above.")
     return all_ok
+
+
+GRACE_SECONDS = 10.0        # Traktor must be gone this long before a background Ripper quits (a restart is not a quit)
+BUSY_LIMIT_SECONDS = 900.0  # ... but never wait longer than this for downloads to finish
+
+
+def should_quit(traktor_gone_for, busy, busy_for, grace=GRACE_SECONDS, busy_limit=BUSY_LIMIT_SECONDS) -> bool:
+    """A background Ripper quits once Traktor has been gone for `grace` seconds and no download is running
+    (or it has already waited `busy_limit` seconds for one)."""
+    if traktor_gone_for < grace:
+        return False
+    return (not busy) or busy_for >= busy_limit
+
+
+def ripper_is_busy(port=PORT) -> bool:
+    """True while a song is queued or downloading, or a playlist is being ripped (asks this app's own API)."""
+    import json
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/queue_items", timeout=3) as r:
+            if any(i.get("status") in ("queued", "downloading") for i in json.loads(r.read()).get("items", [])):
+                return True
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/playlist/job", timeout=3) as r:
+            return json.loads(r.read()).get("status") == "running"
+    except Exception:
+        return False
+
+
+def quit_with_traktor(poll=2.0):
+    """Background mode: leave when Traktor has closed. Runs in its own thread and ends the process (os._exit): everything the app
+    keeps is already committed to its database, and the button and pop-up processes follow it out on their own."""
+    import traktor_process
+    gone_since = busy_since = None
+    while True:
+        time.sleep(poll)
+        now = time.monotonic()
+        if traktor_process.traktor_pids():
+            gone_since = busy_since = None
+            continue
+        gone_since = gone_since or now
+        busy = ripper_is_busy()
+        busy_since = (busy_since or now) if busy else None
+        if should_quit(now - gone_since, busy, (now - busy_since) if busy_since else 0.0):
+            print("Traktor has closed: the background Ripper is quitting.")
+            os._exit(0)
 
 
 def current_branch(root=ROOT):
@@ -268,6 +314,7 @@ def main(argv=None):
     ap.add_argument("--dev", action="store_true", help="auto-reload server and browser (development only)")
     ap.add_argument("--no-window", action="store_true", help="do not open a window, just serve")
     ap.add_argument("--check", action="store_true", help="report what is ready and what is missing, then exit")
+    ap.add_argument("--background", action="store_true", help="no big window; quit by itself after Traktor closes (the Traktor watcher uses this)")
     args = ap.parse_args(argv)
 
     refresh_windows_path()
@@ -278,7 +325,7 @@ def main(argv=None):
                  "then start the Ripper again.")
     if app_is_running():   # a second double-click just brings up the window of the one that is already running
         print("Ripped Ripper is already running; opening its window.")
-        if not args.no_window:
+        if not args.no_window and not args.background:
             open_page(APP_URL)
         return
 
@@ -294,8 +341,11 @@ def main(argv=None):
             print(f"Dev mode: {name} = {value} (separate from your real data)")
 
     if not args.no_window:
-        threading.Thread(target=_open_when_ready, args=(APP_URL,), daemon=True).start()
+        if not args.background:
+            threading.Thread(target=_open_when_ready, args=(APP_URL,), daemon=True).start()
         start_rip_button()
+    if args.background:
+        threading.Thread(target=quit_with_traktor, daemon=True).start()
     uvicorn.run("app:app", **uvicorn_kwargs(args.dev))
 
 

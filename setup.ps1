@@ -3,10 +3,11 @@
  Safe to run again at any time: it only adds what is missing.
    -Yes           answer "yes" to every question (installs ffmpeg with winget without asking)
    -NoShortcut    do not create the Desktop shortcut
+   -NoAutoStart   do not offer to start the Ripper automatically when Traktor opens
    -SkipFfmpeg    do not look for or install ffmpeg
    -ShortcutDir   put the shortcut in this folder instead of the Desktop
 #>
-param([switch]$Yes, [switch]$NoShortcut, [switch]$SkipFfmpeg, [string]$ShortcutDir = '')
+param([switch]$Yes, [switch]$NoShortcut, [switch]$NoAutoStart, [switch]$SkipFfmpeg, [string]$ShortcutDir = '', [string]$StartupDir = '')
 Set-Location -LiteralPath $PSScriptRoot
 $problems = New-Object System.Collections.ArrayList
 
@@ -100,7 +101,17 @@ else {
   } catch { Warn "Could not create the shortcut ($($_.Exception.Message)). You can still start the Ripper with Start Ripper.bat." }
 }
 
-# ---- 5. final check ----
+# ---- 5. start with Traktor ----
+Step 'Start with Traktor'
+if ($NoAutoStart) { Write-Host '   skipped' }
+elseif (Ask 'Start the Ripper automatically whenever Traktor opens (and close it again after Traktor closes)?') {
+  $autostartArgs = @{}
+  if ($StartupDir) { $autostartArgs['StartupDir'] = $StartupDir; $autostartArgs['NoStart'] = $true }
+  & (Join-Path $PSScriptRoot 'autostart.ps1') @autostartArgs
+  if ($LASTEXITCODE -eq 0) { Ok 'auto-start is on (turn it off with "Turn off auto-start.bat")' } else { Warn 'Could not set up auto-start.' }
+} else { Write-Host '   not now (you can run "Turn on auto-start.bat" later)' }
+
+# ---- 6. final check ----
 Step 'Check'
 Update-SessionPath
 & $venvPython (Join-Path $PSScriptRoot 'run.py') --check
