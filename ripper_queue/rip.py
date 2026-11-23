@@ -18,7 +18,7 @@ from pathlib import Path
 
 from filenames import track_basename
 
-from . import files, library, store, sync
+from . import files, library, store, sync, waveform
 
 LIVE = ("queued", "downloading", "ready")
 
@@ -64,8 +64,10 @@ def ensure_in_library(conn, backend, *, video_id, artist, title, album=None, thu
                 part = target.with_name(target.name + ".part")  # Traktor ignores it until the rename below
                 shutil.copyfile(audio, part)
                 os.replace(part, target)
-            return library.add(conn, video_id=video_id, artist=artist, title=title, album=album, length_s=length,
-                               path=target)
+            entry = library.add(conn, video_id=video_id, artist=artist, title=title, album=album, length_s=length,
+                                path=target)
+            waveform.CACHE.precompute(str(target))   # ready before the track is ever loaded on a deck
+            return entry
         finally:
             shutil.rmtree(tmp, ignore_errors=True)  # our own temp folder, never the library or the queue folder
 

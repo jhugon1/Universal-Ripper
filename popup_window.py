@@ -7,6 +7,7 @@ Traktor window when one is found, otherwise in the middle of the screen. Windows
 """
 import argparse
 import ctypes
+import ctypes.wintypes
 import os
 import sys
 import tkinter
@@ -15,8 +16,7 @@ HOLD_MS = 2300
 FADE_IN_MS = 160
 FADE_OUT_MS = 650
 STEP_MS = 16
-WIDTH, HEIGHT = 560, 118
-BG = "#101010"
+BG = "#040201"   # the wordmark picture's own background, so it blends in
 EDGE = "#5A4512"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -38,7 +38,8 @@ def traktor_rect():
         return True
 
     user32.EnumWindows(visit, 0)
-    return found[0] if found else None
+    big = [r for r in found if r[2] >= 800 and r[3] >= 500]   # Traktor also keeps small hidden windows for its controller screens
+    return max(big, key=lambda r: r[2] * r[3]) if big else None
 
 
 def make_click_through(window):
@@ -62,7 +63,6 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if sys.platform != "win32":
         return 0
-    import ctypes.wintypes  # noqa: F401  (RECT)
     from PIL import Image, ImageTk
 
     root = tkinter.Tk()
@@ -75,6 +75,7 @@ def main(argv=None):
 
     head = tkinter.Frame(inner, bg=BG)
     head.pack(anchor="w", padx=18, pady=(14, 0))
+    inner.pack_configure(ipadx=0)
     if args.lead:
         tkinter.Label(head, text=args.lead, bg=BG, fg="#ECEDEE", font=("Segoe UI Semibold", 22)).pack(side="left", padx=(0, 10))
     mark = Image.open(os.path.join(HERE, "static", "ripped_wordmark.png")).convert("RGBA")
@@ -84,15 +85,17 @@ def main(argv=None):
     tkinter.Label(head, image=photo, bg=BG).pack(side="left")
     tkinter.Label(inner, text=ellipsize(args.title), bg=BG, fg="#ECEDEE", font=("Segoe UI Semibold", 15), anchor="w").pack(fill="x", padx=18, pady=(6, 0))
     if args.sub:
-        tkinter.Label(inner, text=args.sub, bg=BG, fg="#9BA0A8", font=("Segoe UI", 10), anchor="w").pack(fill="x", padx=18)
+        tkinter.Label(inner, text=args.sub, bg=BG, fg="#9BA0A8", font=("Segoe UI", 10), anchor="w").pack(fill="x", padx=18, pady=(0, 10))
 
+    root.update_idletasks()
+    width, height_ = root.winfo_reqwidth() + 36, root.winfo_reqheight() + 16   # fit the content, with some air
     rect = traktor_rect()
     if rect:
-        left, top, width, height_ = rect
-        x, y = left + (width - WIDTH) // 2, top + max(60, height_ // 5)
+        left, top, rw, rh = rect
+        x, y = left + (rw - width) // 2, top + max(60, rh // 5)
     else:
-        x, y = (root.winfo_screenwidth() - WIDTH) // 2, root.winfo_screenheight() // 4
-    root.geometry(f"{WIDTH}x{HEIGHT}+{x}+{y}")
+        x, y = (root.winfo_screenwidth() - width) // 2, root.winfo_screenheight() // 4
+    root.geometry(f"{width}x{height_}+{x}+{y}")
     root.update_idletasks()
     make_click_through(root)
 

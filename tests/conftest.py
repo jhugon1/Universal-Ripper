@@ -12,7 +12,7 @@ _SANDBOX = Path(tempfile.mkdtemp(prefix="ripper_tests_"))
 for _name, _value in (("RIPPER_DB", _SANDBOX / "default.db"), ("RIPPER_QUEUE_DIR", _SANDBOX / "Ripper Queue"),
                       ("RIPPER_LIBRARY_DIR", _SANDBOX / "Library"), ("RIPPER_PLAYLIST_DIR", _SANDBOX / "Playlist Rips"),
                       ("RIPPER_TRAKTOR_DIR", _SANDBOX / "no-traktor-here"), ("RIPPER_OLD_RIPS_DIR", _SANDBOX / "no-old-rips"),
-                      ("RIPPER_TRAKTOR_PORT", "0"), ("RIPPER_POPUP", "0")):
+                      ("RIPPER_TRAKTOR_PORT", "0"), ("RIPPER_POPUP", "0"), ("RIPPER_WAVEFORM_DIR", _SANDBOX / "waveforms")):
     os.environ[_name] = str(_value)
 
 

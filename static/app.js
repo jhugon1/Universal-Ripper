@@ -137,15 +137,16 @@
   }
 
   // Traktor's own waveform (read from its Stripes folder by the app): 16384 columns x 4 stacked band levels
-  const WAVE_COLS = 65536, VIEW_SECONDS = 14;
-  // Traktor's colouring, worked out from its own data: low -> blue, mid -> green, high -> red, mixed per vertical line
-  // (green + red = yellow/orange, blue + red = pink, ...). Height is the loudest band on Traktor's 0-255 scale; every
-  // stripe has a constant baseline of about 15, which Traktor shows as a flat line.
-  function analyse(buf) {
-    const h = new Float32Array(WAVE_COLS), rgb = new Uint32Array(WAVE_COLS);
-    const FLOOR = 16, FULL = 200;
-    for (let i = 0; i < WAVE_COLS; i++) {
-      const lo = buf[i * 4], mi = buf[i * 4 + 1], hi = buf[i * 4 + 2], m = Math.max(lo, mi, hi);
+  const VIEW_SECONDS = 14;
+  // Traktor's colouring: low -> blue, mid -> green, high -> red, mixed per vertical line (green + red = yellow/orange,
+  // blue + red = pink, ...). Height is the loudest band on a 0-255 scale. The app computes the columns from the audio
+  // file (2 ms each): 'RWV1', uint32 count, then count x (low, mid, high) bytes.
+  function analyse(blob) {
+    const n = new DataView(blob.buffer, blob.byteOffset, blob.byteLength).getUint32(4, true), buf = blob.subarray(8);
+    const h = new Float32Array(n), rgb = new Uint32Array(n);
+    const FLOOR = 3, FULL = 150;
+    for (let i = 0; i < n; i++) {
+      const lo = buf[i * 3], mi = buf[i * 3 + 1], hi = buf[i * 3 + 2], m = Math.max(lo, mi, hi);
       h[i] = m <= FLOOR ? 0 : Math.min(1, (m - FLOOR) / (FULL - FLOOR));
       let r = hi, g = mi, b = lo;
       const top = Math.max(r, g, b, 1), low = Math.min(r, g, b);
@@ -153,20 +154,24 @@
       r = Math.round(255 * (r - 0.75 * low) / k); g = Math.round(255 * (g - 0.75 * low) / k); b = Math.round(255 * (b - 0.75 * low) / k);
       rgb[i] = (Math.max(0, r) << 16) | (Math.max(0, g) << 8) | Math.max(0, b);
     }
-    return { h, rgb };
+    return { n, h, rgb };
   }
   function refreshWaveform(letter, d) {
     const ui = decks[letter], key = d && d.file_name ? d.file_name : '';
     if (ui.waveKey === key) return;
     ui.waveKey = key; ui.cols = null; ui.overDirty = true;
     if (!key) return;
-    [1500, 4000, 9000].forEach((ms) => setTimeout(async () => {
-      if (ui.waveKey !== key || ui.cols) return;
+    let tries = 0;
+    const poll = async () => {                       // the app answers 202 while it computes the waveform (a few seconds at most)
+      if (ui.waveKey !== key || ui.cols || tries++ > 40) return;
       try {
         const r = await fetch('/api/waveform/' + letter + '?t=' + Date.now());
-        if (r.ok) { ui.cols = analyse(new Uint8Array(await r.arrayBuffer())); ui.overDirty = true; }
-      } catch (e) { /* no waveform yet */ }
-    }, ms));
+        if (r.status === 200) { ui.cols = analyse(new Uint8Array(await r.arrayBuffer())); ui.overDirty = true; return; }
+        if (r.status === 404 && tries > 3) return;    // not a readable track: stop asking
+      } catch (e) { /* try again */ }
+      setTimeout(poll, 1000);
+    };
+    setTimeout(poll, 400);
   }
 
   function fitCanvas(cv) {
@@ -176,12 +181,17 @@
   }
   // one pixel column covering source columns [from, to): its height and the colour of its loudest part
   function spanValue(wf, from, to, out, x) {
-    const a = Math.max(0, Math.floor(from)), b = Math.min(WAVE_COLS, Math.max(a + 1, Math.ceil(to)));
-    if (a >= WAVE_COLS || b <= 0) { out.h[x] = 0; out.c[x] = 0; return; }
-    let best = 0, ci = 0, sum = 0, n = 0;
-    for (let i = a; i < b; i++) { const v = wf.h[i]; if (v >= best) { best = v; ci = wf.rgb[i]; } sum += v; n++; }
+    const N = wf.n, a = Math.max(0, Math.floor(from)), b = Math.min(N, Math.max(a + 1, Math.ceil(to)));
+    if (a >= N || b <= 0) { out.h[x] = 0; out.c[x] = 0; return; }
+    let best = 0, sum = 0, n = 0, wr = 0, wg = 0, wb = 0, wt = 0;
+    for (let i = a; i < b; i++) {
+      const v = wf.h[i], c = wf.rgb[i];
+      if (v > best) best = v;
+      sum += v; n++;
+      wr += ((c >> 16) & 255) * v; wg += ((c >> 8) & 255) * v; wb += (c & 255) * v; wt += v;   // colour: average, weighted by loudness
+    }
     out.h[x] = best * 0.65 + (sum / n) * 0.35;
-    out.c[x] = ci;
+    out.c[x] = wt > 0 ? ((Math.round(wr / wt) << 16) | (Math.round(wg / wt) << 8) | Math.round(wb / wt)) : 0;
   }
   // Traktor draws one continuous body, not separate pulses: bridge the gaps between neighbouring pixels, then draw
   function drawBody(g, out, width, mid, half) {
@@ -204,7 +214,7 @@
     ui.overDirty = false;
     const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
     if (!ui.cols) return;
-    const per = WAVE_COLS / cv.width;
+    const per = ui.cols.n / cv.width;
     const out = { h: new Float32Array(cv.width), c: new Uint32Array(cv.width) };
     for (let x = 0; x < cv.width; x++) spanValue(ui.cols, x * per, (x + 1) * per, out, x);
     drawBody(g, out, cv.width, cv.height / 2, cv.height / 2 - 1);
@@ -214,8 +224,8 @@
     const cv = ui.mainCv; fitCanvas(cv);
     const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
     if (!ui.cols || frac == null) return;
-    const len = ui.trackLen || 1, perCol = len / WAVE_COLS, span = VIEW_SECONDS / perCol;   // source columns visible
-    const centre = frac * WAVE_COLS, step = span / cv.width;
+    const N = ui.cols.n, perCol = (ui.trackLen || N * 0.002) / N, span = VIEW_SECONDS / perCol;   // source columns visible
+    const centre = frac * N, step = span / cv.width;
     const out = { h: new Float32Array(cv.width), c: new Uint32Array(cv.width) };
     for (let x = 0; x < cv.width; x++) {
       const from = centre - span / 2 + x * step;                 // fractional position: scrolls smoothly
