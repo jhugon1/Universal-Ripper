@@ -110,16 +110,12 @@
       <div class="panel-head">
         <div class="queue-title">
           <span class="eyebrow">TONIGHT'S QUEUE</span>
-          <span class="queue-sub" id="queue-sub"></span>
+          {% if dev %}<span class="devbadge" title="Test folders and database, not the ones Traktor uses">DEV DATA</span>{% endif %}<span class="queue-sub" id="queue-sub"></span>
         </div>
         <div class="queue-actions">
           <button class="btn-ghost" type="button" id="open-folder">Open folder</button>
           <button class="btn-ghost" type="button" id="new-night">New night</button>
         </div>
-      </div>
-      <div class="hint" id="hint">
-        <span class="hint-text" id="hint-text"></span>
-        <button class="hint-done" type="button" id="hint-done">Done</button>
       </div>
       <div class="queue-list" id="queue-list"></div>
       <div class="played">

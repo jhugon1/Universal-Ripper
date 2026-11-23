@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parent.parent
-PLACES = ("decks", "ripper", "queue", "queue-list", "results", "hint", "toast", "played-list", "pl-status", "view-playlist")
+PLACES = ("decks", "ripper", "queue", "queue-list", "results", "toast", "played-list", "pl-status", "view-playlist")
 
 
 @pytest.fixture

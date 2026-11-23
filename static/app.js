@@ -281,10 +281,6 @@
 
   function renderQueue(state) {
     setText($('#queue-sub'), (state.session ? state.session.name : '') + ' ' + DOT + ' ' + state.to_play + ' to play');
-    const on = !!(state.folder && state.folder.reselect_needed);
-    $('#hint').classList.toggle('on', on);
-    setText($('#hint-text'), on ? 'New tracks: re-select tonight’s folder in Traktor, sorted by #' : 'Traktor folder is up to date');
-    setStyle($('#hint-done'), 'visibility', on ? 'visible' : 'hidden');
     const list = $('#queue-list'), scroll = list.scrollTop;
     list.textContent = '';
     state.items.forEach((item) => list.appendChild(queueRow(item)));
@@ -308,7 +304,6 @@
     else showToast({ head: 'none', fail: true, title: 'Queue', sub: 'Couldn’t ' + action + ': ' + short(r.data.message || r.status, 60) });
   }
 
-  $('#hint-done').addEventListener('click', () => queueCall('refreshed'));
   $('#open-folder').addEventListener('click', () => api('/api/open_folder', { method: 'POST', body: form({ folder_type: 'queue' }) }));
   let sureTimer = null;
   $('#new-night').addEventListener('click', (e) => {
