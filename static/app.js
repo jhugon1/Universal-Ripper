@@ -60,7 +60,7 @@
   const decks = {};
   $$('.deck').forEach((card) => {
     decks[card.dataset.deck] = {
-      card, state: $('.deck-state', card), title: $('.deck-title', card), artist: $('.deck-artist', card),
+      card, art: $('.deck-art', card), state: $('.deck-state', card), title: $('.deck-title', card), artist: $('.deck-artist', card),
       time: $('.deck-time', card), bpm: $('.deck-bpm', card), key: $('.over-key', card), sync: $('.dbtn-sync', card), fill: $('.bar-fill', card),
       total: $('.deck-total', card), tempo: $('.deck-tempo', card), master: $('.dbtn-master', card), head: $('.deck-playhead', card), mainCv: $('.wave-main', card), overCv: $('.wave-over', card), over: $('.over-head', card), waveKey: '', cols: null, overDirty: true, trackLen: 0, frac: null,
       times: $('.deck-times', card), reset: $('.deck-reset', card),
@@ -160,6 +160,12 @@
     const ui = decks[letter], key = d && d.file_name ? d.file_name : '';
     if (ui.waveKey === key) return;
     ui.waveKey = key; ui.cols = null; ui.overDirty = true;
+    ui.art.style.backgroundImage = ''; ui.art.classList.remove('has-cover');
+    if (key) {                                       // the cover embedded in the file (404 = none: keep the empty disc)
+      const url = '/api/deck_cover/' + letter + '?t=' + Date.now(), img = new Image();
+      img.onload = () => { if (ui.waveKey === key) { ui.art.style.backgroundImage = 'url("' + url + '")'; ui.art.classList.add('has-cover'); } };
+      img.src = url;
+    }
     if (!key) return;
     let tries = 0;
     const poll = async () => {                       // the app answers 202 while it computes the waveform (a few seconds at most)

@@ -567,6 +567,18 @@ def deck_waveform(deck: str):
 def library_cover(video_id: str):
     """The cover art embedded in the library file for this video (the page falls back to its own picture)."""
     conn = queue_store.open_db(db_file())
+@app.get("/api/deck_cover/{deck}")
+def deck_cover(deck: str):
+    """The cover art embedded in the file loaded on a deck (404 when there is none)."""
+    letter = deck.upper()
+    state = traktor_state.decks.get(letter) if letter in ("A", "B", "C", "D") else None
+    path = state and state.get("file_path")
+    cover = queue_files.read_cover(path) if path and os.path.isfile(path) else None
+    if not cover:
+        return Response(status_code=404)
+    return Response(content=cover[0], media_type=cover[1], headers={"Cache-Control": "no-store"})
+
+
     try:
         entry = library.find(conn, video_id)
     finally:
