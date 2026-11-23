@@ -62,7 +62,7 @@
     decks[card.dataset.deck] = {
       card, state: $('.deck-state', card), title: $('.deck-title', card), artist: $('.deck-artist', card),
       time: $('.deck-time', card), bpm: $('.deck-bpm', card), key: $('.deck-key', card), fill: $('.bar-fill', card),
-      total: $('.deck-total', card), tempo: $('.deck-tempo', card), master: $('.dbtn-master', card), head: $('.deck-playhead', card), wave: $('.deck-waveimg', card), waveKey: '',
+      total: $('.deck-total', card), tempo: $('.deck-tempo', card), master: $('.dbtn-master', card), head: $('.deck-playhead', card), mainCv: $('.wave-main', card), overCv: $('.wave-over', card), over: $('.over-head', card), waveKey: '', cols: null, overDirty: true, trackLen: 0, frac: null,
       times: $('.deck-times', card), reset: $('.deck-reset', card),
     };
   });
@@ -107,7 +107,7 @@
       setText(ui.time, '-' + '--:--'); setText(ui.total, '--:--');
       setText(ui.bpm, '---.--'); setText(ui.tempo, '');
       setText(ui.key, DASH);
-      setStyle(ui.fill, 'width', '0%'); setStyle(ui.head, 'left', '0%');
+      setStyle(ui.fill, 'width', '0%'); setStyle(ui.over, 'left', '0%'); ui.frac = null;
       setText(ui.times, '');
     } else {
       const tempo = d.tempo || 1, len = d.track_length || 0, e = shownElapsed(d, st, now);
@@ -121,11 +121,13 @@
       const pc = (tempo - 1) * 100;
       setText(ui.tempo, (pc >= 0 ? '+' : MINUS) + Math.abs(pc).toFixed(1) + '%');
       setText(ui.key, d.key || DASH);
-      setStyle(ui.fill, 'width', pct); setStyle(ui.head, 'left', pct);
+      setStyle(ui.fill, 'width', pct); setStyle(ui.over, 'left', pct);
+      ui.trackLen = len; ui.frac = len ? Math.min(1, Math.max(0, e / len)) : null;
       setText(ui.times, '');
     }
     const isMaster = snap.master && snap.master.deck === letter && st !== 'empty';
     ui.master.classList.toggle('on', !!isMaster);
+    paintOverview(ui); paintMain(ui, ui.frac);
     setText(ui.state, stateText); setStyle(ui.state, 'color', stateColor);
     setStyle(ui.time, 'color', timeColor); setStyle(ui.fill, 'background', timeColor || C.accent);
     setStyle(ui.title, 'color', st === 'empty' ? C.faint : '');
@@ -133,19 +135,55 @@
     setStyle(ui.reset, 'visibility', (d.restored || st === 'stale') ? 'visible' : 'hidden');   // only when there is something to forget
   }
 
-  // the waveform picture the Traktor mod saves (experiment); refreshed after a track change, hidden when there is none
+  // Traktor's own waveform (read from its Stripes folder by the app): 16384 columns x 4 stacked band levels
+  const WAVE_COLS = 16384, VIEW_SECONDS = 14;
+  const BANDS = ['#2F52FF', '#38D6A0', '#5EC8FF', '#F2A0D6'];   // channel 0..3 (low to top), Traktor-like colours
   function refreshWaveform(letter, d) {
     const ui = decks[letter], key = d && d.file_name ? d.file_name : '';
     if (ui.waveKey === key) return;
-    ui.waveKey = key;
-    ui.wave.hidden = true;
+    ui.waveKey = key; ui.cols = null; ui.overDirty = true;
     if (!key) return;
-    [3000, 7000].forEach((ms) => setTimeout(() => {
-      if (ui.waveKey !== key) return;
-      ui.wave.onload = () => { ui.wave.hidden = false; };
-      ui.wave.onerror = () => {};
-      ui.wave.src = '/api/waveform/' + letter + '?t=' + Date.now();
+    [1500, 4000, 9000].forEach((ms) => setTimeout(async () => {
+      if (ui.waveKey !== key || ui.cols) return;
+      try {
+        const r = await fetch('/api/waveform/' + letter + '?t=' + Date.now());
+        if (r.ok) { ui.cols = new Uint8Array(await r.arrayBuffer()); ui.overDirty = true; }
+      } catch (e) { /* no waveform yet */ }
     }, ms));
+  }
+
+  function fitCanvas(cv) {
+    const w = Math.max(1, Math.round(cv.clientWidth * devicePixelRatio)), h = Math.max(1, Math.round(cv.clientHeight * devicePixelRatio));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; return true; }
+    return false;
+  }
+  function paintColumn(g, cols, col, x, mid, half) {
+    const o = Math.min(WAVE_COLS - 1, Math.max(0, col)) * 4;
+    const order = [0, 1, 2, 3].sort((a, b) => cols[o + b] - cols[o + a]);   // tallest first so every band stays visible
+    for (const j of order) {
+      const h = Math.max(1, cols[o + j] / 255 * half);
+      g.fillStyle = BANDS[j]; g.fillRect(x, mid - h, 1, h * 2);
+    }
+  }
+  function paintOverview(ui) {
+    const cv = ui.overCv, resized = fitCanvas(cv);
+    if (!resized && !ui.overDirty) return;
+    ui.overDirty = false;
+    const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
+    if (!ui.cols) return;
+    for (let x = 0; x < cv.width; x++) paintColumn(g, ui.cols, Math.floor(x / cv.width * WAVE_COLS), x, cv.height / 2, cv.height / 2 - 1);
+  }
+  function paintMain(ui, frac) {
+    const cv = ui.mainCv; fitCanvas(cv);
+    const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
+    if (!ui.cols || frac == null) return;
+    const perCol = (ui.trackLen || 1) / WAVE_COLS, span = VIEW_SECONDS / perCol;   // columns visible
+    const centre = frac * WAVE_COLS, step = span / cv.width;
+    for (let x = 0; x < cv.width; x++) {
+      const col = Math.floor(centre - span / 2 + x * step);
+      if (col < 0 || col >= WAVE_COLS) continue;
+      paintColumn(g, ui.cols, col, x, cv.height / 2, cv.height / 2 - 2);
+    }
   }
 
   function frame() {

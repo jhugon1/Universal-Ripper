@@ -64,13 +64,45 @@ def test_the_page_script_is_valid_javascript():
     assert done.returncode == 0, done.stderr
 
 
-def test_deck_waveform_endpoint_serves_the_mods_picture_or_404(tmp_path, monkeypatch):
+def make_stripe(folder, key, columns=65536, loaded=None):
+    import os
+    sub = folder / "001"
+    sub.mkdir(parents=True, exist_ok=True)
+    body = bytearray(b"\x06PRTS" + b"\x00" * 20)
+    for i in range(columns):
+        v = i % 250
+        body += bytes([v // 4, v // 3, v // 2, v])
+    (sub / key).write_bytes(bytes(body))
+    (sub / (key + ".stripe")).write_text("22 serialization::archive")
+    if loaded:
+        os.utime(sub / (key + ".stripe"), (loaded, loaded))
+
+
+def test_stripes_are_read_and_matched_to_the_track_loaded_at_that_time(tmp_path):
+    from traktor import stripes
+    make_stripe(tmp_path, "OLDKEY", loaded=1000)
+    make_stripe(tmp_path, "NEWKEY", loaded=2000)
+    found = stripes.list_stripes(str(tmp_path))
+    assert set(found) == {"OLDKEY", "NEWKEY"}
+    assert stripes.pick_stripe(found, loaded_at=1999) == "NEWKEY"          # touched right after the load
+    assert stripes.pick_stripe(found, loaded_at=1999, taken={"NEWKEY"}) is None   # not one another track already has
+    cols = stripes.read_columns(found["NEWKEY"][1], 16384)
+    assert len(cols) == 16384 * 4 and max(cols[3::4]) > 200
+    (tmp_path / "001" / "BAD").write_bytes(b"nope")
+    assert stripes.read_columns(str(tmp_path / "001" / "BAD")) is None
+
+
+def test_waveform_endpoint_finds_the_stripe_of_the_loaded_deck_and_remembers_it(tmp_path, monkeypatch):
     import app as app_module
     from fastapi.testclient import TestClient
-    monkeypatch.setenv("RIPPER_WAVEFORM_DIR", str(tmp_path))
+    monkeypatch.setenv("RIPPER_STRIPES_DIR", str(tmp_path))
+    make_stripe(tmp_path, "KEYONE", loaded=5000)
     with TestClient(app_module.app) as c:
-        assert c.get("/api/waveform/A").status_code == 404
-        (tmp_path / "deckA.png").write_bytes(b"\x89PNG fake")
+        assert c.get("/api/waveform/A").status_code == 404                     # nothing loaded
+        app_module.traktor_state.decks["A"]["file_path"] = "C:\\x\\a.mp3"
+        app_module.traktor_state.decks["A"]["loaded_at"] = 4999
         got = c.get("/api/waveform/a")
-        assert got.status_code == 200 and got.headers["content-type"] == "image/png" and got.content == b"\x89PNG fake"
+        assert got.status_code == 200 and len(got.content) == 16384 * 4 and got.headers["x-columns"] == "16384"
+        app_module.traktor_state.decks["A"]["loaded_at"] = 9999999999          # later loads reuse the remembered key
+        assert c.get("/api/waveform/A").status_code == 200
         assert c.get("/api/waveform/Z").status_code == 404

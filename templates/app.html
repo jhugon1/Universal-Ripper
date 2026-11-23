@@ -38,10 +38,14 @@
         <div class="deck-keybox"><span class="deck-keylabel">KEY</span> <span class="deck-key"></span></div>
         <button class="deck-reset" type="button" title="Forget the deck state shown here" style="visibility: hidden">Reset</button>
       </div>
-      <div class="deck-wave" role="img" aria-label="Track progress">
-        <img class="deck-waveimg" alt="" hidden>
-        <div class="bar"><div class="bar-fill"></div></div>
+      <div class="deck-wave" role="img" aria-label="Waveform">
+        <canvas class="wave-main"></canvas>
         <div class="deck-playhead"></div>
+      </div>
+      <div class="deck-over" role="img" aria-label="Track progress">
+        <canvas class="wave-over"></canvas>
+        <div class="bar-fill"></div>
+        <div class="deck-playhead over-head"></div>
       </div>
       <div class="deck-times"></div>
     </div>

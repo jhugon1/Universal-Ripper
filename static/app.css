@@ -62,11 +62,11 @@ a { color: var(--accent); }
 .deck-keylabel { font-size: 9px; color: #6E6E6E; letter-spacing: 0.12em; }
 .deck-reset { border: 0; border-radius: 3px; background: #262626; color: #C4C4C4; font-size: 11px; padding: 0 10px; }
 .deck-wave { position: relative; flex: 1 1 auto; min-height: 0; background: #141414; border-radius: 3px; overflow: hidden; }
-.bar { position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), #232323 calc(10% - 1px) 10%); }
-.bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; opacity: 0.22; }
-.deck-waveimg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
-.deck-waveimg:not([hidden]) + .bar { background: none; }
-.deck-playhead { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: #E8503A; }
+.deck-wave canvas, .deck-over canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.deck-over { position: relative; flex: 0 0 22px; background: #141414; border-radius: 3px; overflow: hidden; }
+.bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; opacity: 0.18; }
+.deck-playhead { position: absolute; top: 0; bottom: 0; width: 1px; left: 50%; background: #E8503A; }
+.deck-over .deck-playhead { left: 0; }
 .deck-times { font-size: 13px; color: #7C7C7C; font-variant-numeric: tabular-nums; display: none; }
 
 /* ---------- ripper ---------- */

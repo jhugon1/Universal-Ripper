@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from ytmusicapi import YTMusic
 import yt_dlp
 import devreload
@@ -21,6 +21,7 @@ from ripper_queue import store as queue_store
 from ripper_queue import sync as queue_sync
 from ripper_queue.worker import QueueWorker
 from traktor.receiver import TraktorReceiver, configured_port
+from traktor import stripes as traktor_stripes
 from traktor.state import TraktorState, file_name_of
 import asyncio
 import json
@@ -528,18 +529,42 @@ async def playlist_job_state():
     return JSONResponse(job.snapshot() if job else {"status": "idle"})
 
 
-def waveform_file(deck: str):
-    base = os.environ.get("RIPPER_WAVEFORM_DIR") or os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "RippedRipper", "waveforms")
-    return os.path.join(base, f"deck{deck}.png")
+STRIPE_MAP_KEY = "stripe_map"
+
+
+def stripe_for_deck(letter):
+    """Path of Traktor's stripe for the track on a deck. The first time a track is seen, the stripe Traktor touched
+    right after loading it is matched to it and remembered (path -> key) in the database."""
+    deck = traktor_state.decks.get(letter)
+    path = deck and deck.get("file_path")
+    if not path:
+        return None
+    root = traktor_stripes.stripes_root()
+    stripes = traktor_stripes.list_stripes(root)
+    conn = queue_store.open_db(db_file())
+    try:
+        known = json.loads(queue_store.meta_get(conn, STRIPE_MAP_KEY) or "{}")
+        key = known.get(path)
+        if key not in stripes:
+            key = traktor_stripes.pick_stripe(stripes, deck.get("loaded_at") or 0, taken={k for p, k in known.items() if p != path})
+            if not key:
+                return None
+            known[path] = key
+            queue_store.meta_set(conn, STRIPE_MAP_KEY, json.dumps(known))
+        return stripes[key][1]
+    finally:
+        conn.close()
 
 
 @app.get("/api/waveform/{deck}")
 def deck_waveform(deck: str):
-    """The deck's waveform image saved by the Traktor mod (the waveform experiment); 404 when there is none."""
-    path = waveform_file(deck.upper()) if deck.upper() in ("A", "B", "C", "D") else None
-    if not path or not os.path.isfile(path):
+    """Traktor's own waveform for the track on a deck: 16384 columns x 4 stacked band bytes; 404 until it is found."""
+    letter = deck.upper()
+    path = stripe_for_deck(letter) if letter in ("A", "B", "C", "D") else None
+    data = traktor_stripes.read_columns(path) if path else None
+    if data is None:
         return Response(status_code=404)
-    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return Response(content=data, media_type="application/octet-stream", headers={"Cache-Control": "no-store", "X-Columns": "16384"})
 
 
 @app.get("/api/library/cover/{video_id}")
