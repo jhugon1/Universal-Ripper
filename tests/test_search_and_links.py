@@ -96,3 +96,41 @@ def test_error_text_has_no_terminal_colour_codes_and_no_home_folder():
     assert text == "RuntimeError: ERROR: [youtube] abc: This video is not available second line"
     assert "\x1b" not in text
     assert str(Path.home()) not in rip.clean_error(OSError(f"cannot write {Path.home()}/x")) and len(rip.clean_error(OSError("x" * 900))) == 300
+
+
+# ---- the extra folder: every rip is also linked into a folder the DJ picks ------------------------------
+def test_link_extra_links_the_library_file_and_never_overwrites(tmp_path):
+    import os
+    from ripper_queue import rip, store
+    conn = store.open_db(str(tmp_path / "t.db"))
+    store.ensure_schema(conn)
+    song = tmp_path / "Library" / "Artist - Title.mp3"
+    song.parent.mkdir()
+    song.write_bytes(b"audio")
+    entry = {"path": str(song)}
+    assert rip.link_extra(conn, entry) is None                      # nothing chosen: nothing happens
+    extra = tmp_path / "House Set"
+    extra.mkdir()
+    store.meta_set(conn, rip.EXTRA_KEY, str(extra))
+    first = rip.link_extra(conn, entry)
+    assert first.name == "Artist - Title.mp3" and os.path.samefile(first, song)      # same file, no extra space
+    second = rip.link_extra(conn, entry)                              # a second rip of it: kept, not overwritten
+    assert second != first and first.exists() and song.read_bytes() == b"audio"
+    store.meta_set(conn, rip.EXTRA_KEY, str(tmp_path / "gone"))
+    assert rip.link_extra(conn, entry) is None                        # a folder that no longer exists is ignored
+
+
+def test_extra_folder_endpoints_pick_remember_and_clear(tmp_path, monkeypatch):
+    import app as app_module
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("RIPPER_DB", str(tmp_path / "own.db"))
+    folder = tmp_path / "My Tracks"
+    folder.mkdir()
+    monkeypatch.setattr(app_module, "choose_folder", lambda: str(folder))
+    with TestClient(app_module.app) as c:
+        assert c.get("/api/extra_folder").json() == {"set": False, "name": None}
+        assert c.post("/api/extra_folder/pick").json() == {"set": True, "name": "My Tracks"}
+        assert c.get("/api/extra_folder").json()["name"] == "My Tracks"            # remembered
+        monkeypatch.setattr(app_module, "choose_folder", lambda: None)            # dialog cancelled: keeps the old one
+        assert c.post("/api/extra_folder/pick").json()["name"] == "My Tracks"
+        assert c.post("/api/extra_folder/clear").json() == {"set": False, "name": None}

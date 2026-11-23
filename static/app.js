@@ -174,15 +174,29 @@
     if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; return true; }
     return false;
   }
-  // one pixel column covering source columns [from, to): tallest height, colour of the loudest part, drawn mirrored
-  function paintSpan(g, wf, from, to, x, mid, half) {
+  // one pixel column covering source columns [from, to): its height and the colour of its loudest part
+  function spanValue(wf, from, to, out, x) {
     const a = Math.max(0, Math.floor(from)), b = Math.min(WAVE_COLS, Math.max(a + 1, Math.ceil(to)));
-    if (a >= WAVE_COLS || b <= 0) return;
-    let best = 0, ci = 0, sum = 0, wsum = 0;
-    for (let i = a; i < b; i++) { const v = wf.h[i]; if (v >= best) { best = v; ci = wf.rgb[i]; } sum += v; wsum++; }
-    const level = best * 0.65 + (sum / wsum) * 0.35;        // peak with a little average: continuous but not spiky
-    const h = Math.max(0.5, level * half);   // at least a hairline, so silence is a flat line
-    g.fillStyle = '#' + (0x1000000 | ci).toString(16).slice(1); g.fillRect(x, mid - h, 1, h * 2);
+    if (a >= WAVE_COLS || b <= 0) { out.h[x] = 0; out.c[x] = 0; return; }
+    let best = 0, ci = 0, sum = 0, n = 0;
+    for (let i = a; i < b; i++) { const v = wf.h[i]; if (v >= best) { best = v; ci = wf.rgb[i]; } sum += v; n++; }
+    out.h[x] = best * 0.65 + (sum / n) * 0.35;
+    out.c[x] = ci;
+  }
+  // Traktor draws one continuous body, not separate pulses: bridge the gaps between neighbouring pixels, then draw
+  function drawBody(g, out, width, mid, half) {
+    const h = out.h, s = new Float32Array(width);
+    const at = (i) => (i < 0 || i >= width ? 0 : h[i]);
+    for (let x = 0; x < width; x++) {
+      s[x] = Math.max(h[x] * 0.92, 0.25 * at(x - 1) + 0.5 * h[x] + 0.25 * at(x + 1), 0.62 * Math.max(at(x - 2), at(x + 2)), 0.45 * Math.max(at(x - 4), at(x + 4)));
+    }
+    let last = 0;
+    for (let x = 0; x < width; x++) {
+      if (out.c[x]) last = out.c[x];
+      const col = out.c[x] || last;
+      const hh = Math.max(0.5, s[x] * half);
+      g.fillStyle = '#' + (0x1000000 | col).toString(16).slice(1); g.fillRect(x, mid - hh, 1, hh * 2);
+    }
   }
   function paintOverview(ui) {
     const cv = ui.overCv, resized = fitCanvas(cv);
@@ -191,7 +205,9 @@
     const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
     if (!ui.cols) return;
     const per = WAVE_COLS / cv.width;
-    for (let x = 0; x < cv.width; x++) paintSpan(g, ui.cols, x * per, (x + 1) * per, x, cv.height / 2, cv.height / 2 - 1);
+    const out = { h: new Float32Array(cv.width), c: new Uint32Array(cv.width) };
+    for (let x = 0; x < cv.width; x++) spanValue(ui.cols, x * per, (x + 1) * per, out, x);
+    drawBody(g, out, cv.width, cv.height / 2, cv.height / 2 - 1);
   }
   const CUE_COLORS = { cue: '#3FB0FF', fadeIn: '#FF8A4C', fadeOut: '#FF8A4C', load: '#FFD23F', grid: '#FFFFFF', loop: '#3DD68C' };
   function paintMain(ui, frac, d, elapsed) {
@@ -200,10 +216,12 @@
     if (!ui.cols || frac == null) return;
     const len = ui.trackLen || 1, perCol = len / WAVE_COLS, span = VIEW_SECONDS / perCol;   // source columns visible
     const centre = frac * WAVE_COLS, step = span / cv.width;
+    const out = { h: new Float32Array(cv.width), c: new Uint32Array(cv.width) };
     for (let x = 0; x < cv.width; x++) {
       const from = centre - span / 2 + x * step;                 // fractional position: scrolls smoothly
-      paintSpan(g, ui.cols, from, from + step, x, cv.height / 2, cv.height / 2 - 2);
+      spanValue(ui.cols, from, from + step, out, x);
     }
+    drawBody(g, out, cv.width, cv.height / 2, cv.height / 2 - 2);
     const pxPerSec = cv.width / VIEW_SECONDS, xAt = (t) => cv.width / 2 + (t - elapsed) * pxPerSec;
     const raw = (d && d.raw) || {}, bpm = d && d.bpm, grid = Number(raw.gridOffset);
     if (bpm > 0 && Number.isFinite(grid)) {            // beat grid: a thin line on every beat, brighter on every 4th
@@ -235,6 +253,23 @@
     if (r.ok) takeSnapshot(r.data);
   }));
   function takeSnapshot(state) { snap = state; rxAt = performance.now(); }
+
+  // ---------- extra folder: every rip is also saved into a folder the user picks ----------
+  function showExtra(s) {
+    const on = !!(s && s.set);
+    $('#extra').classList.toggle('on', on);
+    setText($('#extra-pick'), on ? 'Also saving to: ' + s.name : '+ Also save to folder');
+    $('#extra-clear').hidden = !on;
+  }
+  $('#extra-pick').addEventListener('click', async () => {
+    const r = await api('/api/extra_folder/pick', { method: 'POST' });
+    if (r.ok) showExtra(r.data);
+  });
+  $('#extra-clear').addEventListener('click', async () => {
+    const r = await api('/api/extra_folder/clear', { method: 'POST' });
+    if (r.ok) showExtra(r.data);
+  });
+  api('/api/extra_folder').then((r) => { if (r.ok) showExtra(r.data); });
 
   // ---------- tonight's queue ----------
   const ICON = {

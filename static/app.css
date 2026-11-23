@@ -175,3 +175,7 @@ a { color: var(--accent); }
 #splash { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center; transition: opacity 0.4s ease; }
 #splash img { width: 240px; height: 240px; border-radius: 24px; object-fit: cover; }
 #splash.gone { opacity: 0; pointer-events: none; }
+
+.extra { display: flex; gap: 4px; align-items: center; margin-left: auto; margin-right: 10px; min-width: 0; }
+.extra .btn-ghost { height: 26px; font-size: 12px; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.extra.on #extra-pick { color: var(--accent); border-color: var(--accent); }

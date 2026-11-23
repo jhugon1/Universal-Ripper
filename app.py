@@ -681,6 +681,57 @@ async def events(request: Request):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+def choose_folder():
+    """Ask for a folder with the system's own dialog (this app only ever runs on the DJ's own machine)."""
+    import tkinter
+    from tkinter import filedialog
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        return filedialog.askdirectory(title="Also save every rip to this folder", mustexist=True,
+                                       initialdir=os.path.join(os.path.expanduser("~"), "Music")) or None
+    finally:
+        root.destroy()
+
+
+def extra_folder_state():
+    conn = queue_store.open_db(db_file())
+    try:
+        folder = queue_rip.extra_dir(conn)
+    finally:
+        conn.close()
+    return {"set": bool(folder), "name": os.path.basename(folder.rstrip("\\/")) if folder else None}
+
+
+@app.get("/api/extra_folder")
+def get_extra_folder():
+    return extra_folder_state()
+
+
+@app.post("/api/extra_folder/pick")
+async def pick_extra_folder():
+    """Open the folder dialog and remember the choice: every rip is also linked into it from then on."""
+    folder = await run_in_threadpool(choose_folder)
+    if folder:
+        conn = queue_store.open_db(db_file())
+        try:
+            queue_store.meta_set(conn, queue_rip.EXTRA_KEY, os.path.normpath(folder))
+        finally:
+            conn.close()
+    return extra_folder_state()
+
+
+@app.post("/api/extra_folder/clear")
+def clear_extra_folder():
+    conn = queue_store.open_db(db_file())
+    try:
+        queue_store.meta_set(conn, queue_rip.EXTRA_KEY, "")
+    finally:
+        conn.close()
+    return extra_folder_state()
+
+
 @app.post("/api/open_folder")
 def open_folder(folder_type: str = Form(...)):
     try:

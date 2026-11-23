@@ -72,6 +72,26 @@ def live_item(conn, session_id, video_id):
     return dict(row) if row else None
 
 
+EXTRA_KEY = "extra_dir"
+
+
+def extra_dir(conn):
+    """The extra folder every rip is also linked into (chosen on the page), or None when none is set or it is gone."""
+    value = store.meta_get(conn, EXTRA_KEY)
+    return value if value and os.path.isdir(value) else None
+
+
+def link_extra(conn, entry):
+    """Also put the library file into the extra folder as `Artist - Title.mp3` (a hard link, never overwriting)."""
+    folder = extra_dir(conn)
+    if not folder:
+        return None
+    try:
+        return files.place_link(entry["path"], folder, os.path.basename(entry["path"]))[0]
+    except OSError:
+        return None  # an unwritable extra folder never breaks the rip
+
+
 def link_item(conn, item, entry, root=None):
     """Put a link to the library file into tonight's folder as `NNN Artist - Title.mp3` and mark the item ready."""
     session = conn.execute("SELECT * FROM sessions WHERE id = ?", (item["session_id"],)).fetchone()
@@ -79,6 +99,7 @@ def link_item(conn, item, entry, root=None):
     target, _kind = files.place_link(entry["path"], folder, files.item_filename(item["position"], item["artist"], item["title"]))
     store.update_item(conn, item["id"], status="ready", file_path=str(target), library_id=entry["id"],
                       length_s=entry["length_s"], marker_position=item["position"], error=None)
+    link_extra(conn, entry)
     store.mark_folder_changed(conn)
     return store.get_item(conn, item["id"])
 

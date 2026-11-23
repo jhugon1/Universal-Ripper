@@ -197,6 +197,7 @@ def rip_track(conn, job, track, *, backend, yt):
                                   title=video["title"], album=video["album"] or track.get("album"),
                                   thumbnail=video["thumbnail"])
     files.place_link(entry["path"], job.folder, target.name)
+    rip.link_extra(conn, entry)
     return "linked", None
 
 
