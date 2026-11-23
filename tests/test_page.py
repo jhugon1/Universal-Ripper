@@ -104,7 +104,7 @@ def test_waveform_endpoint_finds_the_stripe_of_the_loaded_deck_and_remembers_it(
         app_module.traktor_state.decks["A"]["file_path"] = "C:\\x\\a.mp3"
         app_module.traktor_state.decks["A"]["loaded_at"] = 4999
         got = c.get("/api/waveform/a")
-        assert got.status_code == 200 and len(got.content) == 16384 * 4 and got.headers["x-columns"] == "16384"
+        assert got.status_code == 200 and len(got.content) == 65536 * 4 and got.headers["x-columns"] == "65536"
         app_module.traktor_state.decks["A"]["loaded_at"] = 9999999999          # later loads reuse the remembered key
         assert c.get("/api/waveform/A").status_code == 200
         assert c.get("/api/waveform/Z").status_code == 404

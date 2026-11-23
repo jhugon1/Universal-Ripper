@@ -2,7 +2,8 @@
 
 Traktor keeps one overview "stripe" per analysed track in `Documents\\Native Instruments\\Traktor <version>\\Stripes\\NNN\\<KEY>`:
 a 25-byte header (`06 'PRTS' ...`) followed by 65 536 columns of 4 bytes, stretched over the whole track whatever its
-length. The four bytes of a column are stacked band levels (each at least the one before it); the last is the total.
+length. Bytes 0-2 of a column are the low, mid and high band levels; byte 3 is NOT audio (it carries a 255 marker every 64 columns
+even in silence), so drawing code must ignore it.
 A companion `<KEY>.stripe` file is touched whenever the track is loaded, which is how a loaded deck is matched to its
 stripe (the key is not stored in the audio file or the collection).
 """

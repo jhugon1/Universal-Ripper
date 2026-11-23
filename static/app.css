@@ -60,10 +60,13 @@ a { color: var(--accent); }
 .deck-strip { flex: 1 1 auto; position: relative; background: #202020; border-radius: 3px; min-width: 0; }
 .deck-strip i { position: absolute; top: 28%; bottom: 28%; width: 1px; background: #8A8A8A; }
 .deck-strip i:nth-child(1) { left: 25%; } .deck-strip i:nth-child(2) { left: 50%; background: #3A3A3A; top: 0; bottom: 0; } .deck-strip i:nth-child(3) { left: 75%; }
-.dbtn-nudge { flex: 0 0 auto; padding: 0 18px; font-size: 12px; }
+.btn-group { flex: 0 0 150px; display: flex; gap: 6px; }
+.btn-group .dbtn { flex: 1 1 0; padding: 0; }
+.dbtn-nudge { font-size: 12px; }
 .dbtn-start { flex: 0 0 26px; padding: 0; color: #8A8A8A; }
 .dbtn-key { flex: 0 0 40px; padding: 0; background: #3A3200; color: #E8C619; font-size: 12px; }
-.deck-reset { border: 0; border-radius: 3px; background: #262626; color: #C4C4C4; font-size: 11px; padding: 0 10px; }
+.deck { position: relative; }
+.deck-reset { position: absolute; top: 12px; right: 70px; border: 0; border-radius: 3px; background: #262626; color: #C4C4C4; font-size: 11px; padding: 0 10px; }
 .deck-wave { position: relative; flex: 1 1 auto; min-height: 0; background: #141414; border-radius: 3px; overflow: hidden; contain: paint; }
 .deck-wave canvas, .deck-over canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
 .deck-overrow { display: flex; gap: 6px; height: 30px; flex: 0 0 30px; align-items: stretch; }

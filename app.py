@@ -566,13 +566,13 @@ def stripe_for_deck(letter):
 
 @app.get("/api/waveform/{deck}")
 def deck_waveform(deck: str):
-    """Traktor's own waveform for the track on a deck: 16384 columns x 4 stacked band bytes; 404 until it is found."""
+    """Traktor's own waveform for the track on a deck: 65536 columns x 4 bytes (channels 0-2 = low, mid, high level; channel 3 is not audio); 404 until it is found."""
     letter = deck.upper()
     path = stripe_for_deck(letter) if letter in ("A", "B", "C", "D") else None
-    data = traktor_stripes.read_columns(path) if path else None
+    data = traktor_stripes.read_columns(path, traktor_stripes.COLUMNS) if path else None
     if data is None:
         return Response(status_code=404)
-    return Response(content=data, media_type="application/octet-stream", headers={"Cache-Control": "no-store", "X-Columns": "16384"})
+    return Response(content=data, media_type="application/octet-stream", headers={"Cache-Control": "no-store", "X-Columns": str(traktor_stripes.COLUMNS)})
 
 
 @app.get("/api/library/cover/{video_id}")

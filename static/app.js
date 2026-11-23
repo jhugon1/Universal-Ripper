@@ -137,8 +137,25 @@
   }
 
   // Traktor's own waveform (read from its Stripes folder by the app): 16384 columns x 4 stacked band levels
-  const WAVE_COLS = 16384, VIEW_SECONDS = 14;
-  const BANDS = ['#2F52FF', '#38D6A0', '#5EC8FF', '#F2A0D6'];   // channel 0..3 (low to top), Traktor-like colours
+  const WAVE_COLS = 65536, VIEW_SECONDS = 14;
+  // one colour per vertical line, from the balance of low / mid / high: blue -> cyan -> green -> pink
+  const STOPS = [[0, [42, 60, 255]], [0.3, [53, 200, 255]], [0.6, [61, 224, 143]], [1, [245, 160, 216]]];
+  const LUT = [];
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255; let k = 0; while (k < STOPS.length - 2 && t > STOPS[k + 1][0]) k++;
+    const [t0, c0] = STOPS[k], [t1, c1] = STOPS[k + 1], f = Math.min(1, Math.max(0, (t - t0) / (t1 - t0)));
+    LUT.push('rgb(' + c0.map((v, n) => Math.round(v + (c1[n] - v) * f)).join(',') + ')');
+  }
+  function analyse(buf) {            // per column: height (loudness) and colour index; byte 3 is not audio
+    const h = new Float32Array(WAVE_COLS), c = new Uint8Array(WAVE_COLS);
+    const FLOOR = 3, FULL = 130;     // fixed scale (loud music peaks near 125): silence stays a flat line, like Traktor
+    for (let i = 0; i < WAVE_COLS; i++) {
+      const lo = buf[i * 4], mi = buf[i * 4 + 1], hi = buf[i * 4 + 2], sum = lo + mi + hi, m = Math.max(lo, mi, hi);
+      h[i] = m <= FLOOR ? 0 : Math.pow(Math.min(1, (m - FLOOR) / (FULL - FLOOR)), 0.85);
+      c[i] = sum ? Math.round(255 * Math.min(1, (mi * 0.45 + hi) / sum * 1.15)) : 0;
+    }
+    return { h, c };
+  }
   function refreshWaveform(letter, d) {
     const ui = decks[letter], key = d && d.file_name ? d.file_name : '';
     if (ui.waveKey === key) return;
@@ -148,7 +165,7 @@
       if (ui.waveKey !== key || ui.cols) return;
       try {
         const r = await fetch('/api/waveform/' + letter + '?t=' + Date.now());
-        if (r.ok) { ui.cols = new Uint8Array(await r.arrayBuffer()); ui.overDirty = true; }
+        if (r.ok) { ui.cols = analyse(new Uint8Array(await r.arrayBuffer())); ui.overDirty = true; }
       } catch (e) { /* no waveform yet */ }
     }, ms));
   }
@@ -158,13 +175,15 @@
     if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; return true; }
     return false;
   }
-  function paintColumn(g, cols, col, x, mid, half) {
-    const o = Math.min(WAVE_COLS - 1, Math.max(0, col)) * 4;
-    const order = [0, 1, 2, 3].sort((a, b) => cols[o + b] - cols[o + a]);   // tallest first so every band stays visible
-    for (const j of order) {
-      const h = Math.max(1, cols[o + j] / 255 * half);
-      g.fillStyle = BANDS[j]; g.fillRect(x, mid - h, 1, h * 2);
-    }
+  // one pixel column covering source columns [from, to): tallest height, colour of the loudest part, drawn mirrored
+  function paintSpan(g, wf, from, to, x, mid, half) {
+    const a = Math.max(0, Math.floor(from)), b = Math.min(WAVE_COLS, Math.max(a + 1, Math.ceil(to)));
+    if (a >= WAVE_COLS || b <= 0) return;
+    let best = 0, ci = 0, sum = 0, wsum = 0;
+    for (let i = a; i < b; i++) { const v = wf.h[i]; if (v >= best) { best = v; ci = wf.c[i]; } sum += v; wsum++; }
+    const level = best * 0.65 + (sum / wsum) * 0.35;        // peak with a little average: continuous but not spiky
+    const h = Math.max(0.5, level * half);   // at least a hairline, so silence is a flat line
+    g.fillStyle = LUT[ci]; g.fillRect(x, mid - h, 1, h * 2);
   }
   function paintOverview(ui) {
     const cv = ui.overCv, resized = fitCanvas(cv);
@@ -172,19 +191,19 @@
     ui.overDirty = false;
     const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
     if (!ui.cols) return;
-    for (let x = 0; x < cv.width; x++) paintColumn(g, ui.cols, Math.floor(x / cv.width * WAVE_COLS), x, cv.height / 2, cv.height / 2 - 1);
+    const per = WAVE_COLS / cv.width;
+    for (let x = 0; x < cv.width; x++) paintSpan(g, ui.cols, x * per, (x + 1) * per, x, cv.height / 2, cv.height / 2 - 1);
   }
   const CUE_COLORS = { cue: '#3FB0FF', fadeIn: '#FF8A4C', fadeOut: '#FF8A4C', load: '#FFD23F', grid: '#FFFFFF', loop: '#3DD68C' };
   function paintMain(ui, frac, d, elapsed) {
     const cv = ui.mainCv; fitCanvas(cv);
     const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
     if (!ui.cols || frac == null) return;
-    const len = ui.trackLen || 1, perCol = len / WAVE_COLS, span = VIEW_SECONDS / perCol;   // columns visible
+    const len = ui.trackLen || 1, perCol = len / WAVE_COLS, span = VIEW_SECONDS / perCol;   // source columns visible
     const centre = frac * WAVE_COLS, step = span / cv.width;
     for (let x = 0; x < cv.width; x++) {
-      const col = Math.floor(centre - span / 2 + x * step);
-      if (col < 0 || col >= WAVE_COLS) continue;
-      paintColumn(g, ui.cols, col, x, cv.height / 2, cv.height / 2 - 2);
+      const from = centre - span / 2 + x * step;                 // fractional position: scrolls smoothly
+      paintSpan(g, ui.cols, from, from + step, x, cv.height / 2, cv.height / 2 - 2);
     }
     const pxPerSec = cv.width / VIEW_SECONDS, xAt = (t) => cv.width / 2 + (t - elapsed) * pxPerSec;
     const raw = (d && d.raw) || {}, bpm = d && d.bpm, grid = Number(raw.gridOffset);
